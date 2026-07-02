@@ -1,0 +1,103 @@
+package claude_test
+
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/lesomnus/cld/internal/claude"
+	"github.com/stretchr/testify/require"
+)
+
+func TestEncodeProjectPath(t *testing.T) {
+	t.Run("slashes", func(t *testing.T) {
+		require.Equal(t, "-workspace", claude.EncodeProjectPath("/workspace"))
+	})
+	t.Run("every non-alphanumeric character", func(t *testing.T) {
+		require.Equal(t, "-home-a-b-c-1", claude.EncodeProjectPath("/home/a_b.c 1"))
+	})
+	t.Run("one dash per multibyte character, not per byte", func(t *testing.T) {
+		// A 3-byte Hangul syllable must encode to a single dash.
+		require.Equal(t, "-workspaces--", claude.EncodeProjectPath("/workspaces/가"))
+	})
+}
+
+func TestSeedState(t *testing.T) {
+	parse := func(t *testing.T, data []byte) map[string]any {
+		var v map[string]any
+		require.NoError(t, json.Unmarshal(data, &v))
+		return v
+	}
+
+	t.Run("from scratch", func(t *testing.T) {
+		out, err := claude.SeedState(nil, "/workspace")
+		require.NoError(t, err)
+
+		v := parse(t, out)
+		require.Equal(t, true, v["hasCompletedOnboarding"])
+		p := v["projects"].(map[string]any)["/workspace"].(map[string]any)
+		require.Equal(t, true, p["hasTrustDialogAccepted"])
+		require.Equal(t, true, p["hasCompletedProjectOnboarding"])
+	})
+	t.Run("existing keys are preserved", func(t *testing.T) {
+		in := []byte(`{"theme":"light","projects":{"/workspace":{"hasTrustDialogAccepted":false},"/other":{"x":1}}}`)
+		out, err := claude.SeedState(in, "/workspace")
+		require.NoError(t, err)
+
+		v := parse(t, out)
+		require.Equal(t, "light", v["theme"])
+		require.Equal(t, true, v["hasCompletedOnboarding"])
+		projects := v["projects"].(map[string]any)
+		require.Equal(t, false, projects["/workspace"].(map[string]any)["hasTrustDialogAccepted"])
+		require.Contains(t, projects, "/other")
+	})
+	t.Run("invalid existing document", func(t *testing.T) {
+		_, err := claude.SeedState([]byte("nope"), "/workspace")
+		require.Error(t, err)
+	})
+}
+
+func TestSeedSettings(t *testing.T) {
+	t.Run("sets retention", func(t *testing.T) {
+		out, err := claude.SeedSettings(nil)
+		require.NoError(t, err)
+
+		var v map[string]any
+		require.NoError(t, json.Unmarshal(out, &v))
+		require.Equal(t, float64(365), v["cleanupPeriodDays"])
+	})
+	t.Run("existing retention is preserved", func(t *testing.T) {
+		out, err := claude.SeedSettings([]byte(`{"cleanupPeriodDays":7,"model":"opus"}`))
+		require.NoError(t, err)
+
+		var v map[string]any
+		require.NoError(t, json.Unmarshal(out, &v))
+		require.Equal(t, float64(7), v["cleanupPeriodDays"])
+		require.Equal(t, "opus", v["model"])
+	})
+}
+
+func TestClassify(t *testing.T) {
+	t.Run("project state", func(t *testing.T) {
+		require.Equal(t, claude.BackupProject, claude.Classify("projects/-workspace/abc.jsonl"))
+		require.Equal(t, claude.BackupProject, claude.Classify("file-history/xyz/1"))
+	})
+	t.Run("global state", func(t *testing.T) {
+		require.Equal(t, claude.BackupGlobal, claude.Classify(".credentials.json"))
+		require.Equal(t, claude.BackupGlobal, claude.Classify(".claude.json"))
+		require.Equal(t, claude.BackupGlobal, claude.Classify("settings.json"))
+		require.Equal(t, claude.BackupGlobal, claude.Classify("agents/foo.md"))
+		require.Equal(t, claude.BackupGlobal, claude.Classify("CLAUDE.md"))
+	})
+	t.Run("skipped state", func(t *testing.T) {
+		require.Equal(t, claude.BackupSkip, claude.Classify("shell-snapshots/x"))
+		require.Equal(t, claude.BackupSkip, claude.Classify("sessions/1.json"))
+		require.Equal(t, claude.BackupSkip, claude.Classify("statsig/cache"))
+		require.Equal(t, claude.BackupSkip, claude.Classify("todos/old.json"))
+		require.Equal(t, claude.BackupSkip, claude.Classify("foo.lock"))
+		require.Equal(t, claude.BackupSkip, claude.Classify("."))
+	})
+	t.Run("temp files are skipped even under projects", func(t *testing.T) {
+		require.Equal(t, claude.BackupSkip, claude.Classify("projects/-workspace/s1.jsonl.tmp"))
+		require.Equal(t, claude.BackupSkip, claude.Classify("projects/-workspace/x.lock"))
+	})
+}

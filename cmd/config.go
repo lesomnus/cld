@@ -4,12 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 
 	"github.com/goccy/go-yaml"
 	"github.com/lesomnus/cld/cmd/config"
-	"github.com/lesomnus/otx/log"
 	"github.com/lesomnus/xli"
 	"github.com/lesomnus/xli/flg"
 	"github.com/lesomnus/z"
@@ -56,21 +54,6 @@ func UseConfigInit(ctx context.Context, cmd *xli.Command) (context.Context, *con
 		if c == nil {
 			c = &config.Config{}
 		}
-	}
-
-	ctx, o, err := c.Otel.Build(ctx)
-	if err != nil {
-		return nil, nil, z.Err(err, "build otel")
-	}
-	if err := o.Start(ctx); err != nil {
-		return nil, nil, z.Err(err, "start otel")
-	}
-
-	l := log.From(ctx)
-	if p := c.Path(); p == "" {
-		l.Info("use default config")
-	} else {
-		l.Info("config loaded", slog.String("path", p))
 	}
 
 	if err := c.Evaluate(); err != nil {

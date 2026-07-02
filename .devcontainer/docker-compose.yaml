@@ -7,6 +7,13 @@ services:
     privileged: true
     environment:
       - SHELL=/bin/zsh
+      - DOCKER_HOST=tcp://docker:2375
+
+    # Wait for the docker sidecar to accept connections before starting, so
+    # DOCKER_HOST is usable immediately.
+    depends_on:
+      docker:
+        condition: service_healthy
 
     volumes:
       - command.history:/commandhistory
@@ -27,7 +34,23 @@ services:
           cpus: "2"
           memory: 4G
 
+  docker:
+    image: docker:28-dind
+    privileged: true
+    environment:
+      # Disable TLS so dockerd listens on plain tcp://0.0.0.0:2375.
+      - DOCKER_TLS_CERTDIR=
+    volumes:
+      - dind.data:/var/lib/docker
+    healthcheck:
+      test: ["CMD", "docker", "version"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
 volumes:
   command.history:
   go.cache.mod:
   go.cache.bin:
+  dind.data:

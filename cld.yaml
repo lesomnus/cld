@@ -1,4 +1,27 @@
-# Greeting configuration (used by the `greet` subcommand).
-greet:
-  # Format string; %s is replaced with the name argument.
-  format: "Hello, %s!"
+# All fields are optional; commented values show the defaults.
+
+# Directory for disposable data: binary cache and sockets.
+#cache_dir: ~/.cache/cld
+# Directory for data that must not be lost: conversation backups.
+#data_dir: ~/.local/share/cld
+
+# Glob patterns matched against the host-side workspace path
+# (the "devcontainer.local_folder" label) to exclude from provisioning.
+# "**" crosses path separators; a leading "~/" expands to the home directory.
+#ignore:
+#  - ~/work/vendor/**
+
+release:
+  # Base URL of the Claude Code release channel.
+  #base_url: https://downloads.claude.ai/claude-code-releases
+  # Release channel to follow: "stable" or "latest".
+  #channel: stable
+  # How often to check the channel for a new version.
+  #check_interval: 1h
+
+sync:
+  # Delay after a change before conversation state is copied out.
+  #debounce: 3s
+  # Polling interval used when the in-container watcher cannot run
+  # (container architecture differs from the host).
+  #fallback_interval: 1m

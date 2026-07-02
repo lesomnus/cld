@@ -1,20 +1,37 @@
-# go-app
+# cld
 
-My flavor of "Hello, World!" for Go app.
+Runs Claude Code *inside* your devcontainers, automatically.
 
-## Quick Start
+`cld serve` watches Docker events; when a devcontainer starts, it copies the
+claude CLI into the container, seeds onboarding/trust state, and opens a host
+tmux session running claude at the workspace root via `docker exec`. Claude is
+sandboxed in the container — the container needs nothing preinstalled, not
+even tmux. Conversation state is continuously backed up to the host and
+restored when the container is recreated.
+
+## Usage
 
 ```sh
-# Replace all occurrences of "github.com/lesomnus/go-app" with your own module path.
-$ ./scripts/init.sh github.com/your-name/your-app
+# The daemon. Provisions every devcontainer it sees (label cld.ignore=true to opt out).
+$ cld serve
 
-# Build and test the app.
-# Build results will be placed in the `/dist` directory.
-$ docker buildx bake build test
+# List provisioned devcontainers.
+$ cld ls
+NAME  CONTAINER     STATUS  VERSION
+cld   3f9c2a81b04d  ready   2.1.187
 
-# Load apps into the local Docker engine.
-$ docker buildx bake app --load
-$ docker run --rm ghcr.io/lesomnus/go-app:local greet
-> |........| 19:08:03.037 ○ 000000 000000 use default config
-> Hello, hypnos!
+# Attach to a devcontainer's claude session.
+$ cld it cld
+```
+
+See `cld.yaml` for configuration and `plan.md` for the design.
+
+## Development
+
+The devcontainer ships a DinD sidecar; integration tests run against it via
+`DOCKER_HOST`.
+
+```sh
+$ go test ./...          # unit + integration (DinD)
+$ go test -short ./...   # unit only
 ```
