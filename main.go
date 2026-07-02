@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/lesomnus/go-app/cmd"
+	"github.com/lesomnus/cld/cmd"
 )
 
 func main() {
