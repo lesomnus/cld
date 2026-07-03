@@ -25,137 +25,198 @@ type Info struct {
 	// UID the daemon runs as; the attach exec must match it for tmux to
 	// accept the client.
 	UID int `json:"uid"`
+	// APIAttach reports that the daemon can stream a tmux attach over this
+	// control socket (GET /session/attach). It lets a client reaching the
+	// daemon through the in-container relay attach with no docker or tmux of
+	// its own. Only offered when the daemon runs in a container.
+	APIAttach bool `json:"api_attach,omitempty"`
 }
 
-// api serves the control plane: listing and session-exit notifications.
-// No TTY ever flows through this socket.
+// api serves the full control plane on the daemon's own socket, for trusted
+// host-side clients. No TTY flows here except the hijacked GET /session/attach.
 func (d *Daemon) api() http.Handler {
 	mux := http.NewServeMux()
-
-	mux.HandleFunc("GET /items", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"items": d.Items()})
-	})
-
-	mux.HandleFunc("GET /info", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Info{
-			ContainerID: d.self_ctr,
-			TmuxSocket:  d.cfg.TmuxSocketPath(),
-			UID:         os.Getuid(),
-		})
-	})
-
-	mux.HandleFunc("POST /notify/exited", func(w http.ResponseWriter, r *http.Request) {
-		id := r.URL.Query().Get("container")
-		if id == "" {
-			http.Error(w, "container required", http.StatusBadRequest)
-			return
-		}
-
-		gen := r.URL.Query().Get("gen")
-		code, _ := strconv.Atoi(r.URL.Query().Get("code"))
-
-		// Look up only; a stale notify for an unknown container must not
-		// create a phantom entry in the listing.
-		e := d.lookup(id)
-		if e == nil {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		e.mbox.post(func() {
-			if e.item.Name == "" || e.item.Status == StatusStopped {
-				return
-			}
-			// Ignore a notify from a superseded generation: the container has
-			// since restarted and a fresh session exists.
-			if gen != "" && gen != e.started_at {
-				return
-			}
-			if e.item.Workspace != "" {
-				d.copy_out(d.base_ctx, e, dirty{global: true, project: true})
-			}
-			if code != 0 {
-				// A non-zero exit is a crash or a failed launch, not the user
-				// quitting: surface it as failed instead of masking it as a
-				// clean end. session_failed keeps it settled so a reconcile does
-				// not silently flip it back to ready; `cld it --new` retries.
-				e.session_failed = true
-				e.item.Status = StatusFailed
-				e.item.Error = fmt.Sprintf("session exited with status %d", code)
-				e.publish()
-				d.log.Warn("session failed",
-					slog.String("name", e.item.Name), slog.Int("code", code))
-				return
-			}
-			// A clean exit is the user ending the session. Persist it so a
-			// daemon restart does not resurrect it.
-			e.session_failed = false
-			d.sessions.set(id, sessionState{Gen: e.started_at, Ended: true})
-			e.item.Status = StatusSessionEnded
-			e.item.Error = ""
-			e.publish()
-			d.log.Info("session exited", slog.String("name", e.item.Name))
-		})
-		w.WriteHeader(http.StatusNoContent)
-	})
-
-	// Recreate a session the user ended, addressed by display name. Backs
-	// `cld it --new`.
-	mux.HandleFunc("POST /session/new", func(w http.ResponseWriter, r *http.Request) {
-		name := r.URL.Query().Get("name")
-		if name == "" {
-			http.Error(w, "name required", http.StatusBadRequest)
-			return
-		}
-		e := d.by_name(name)
-		if e == nil {
-			http.Error(w, "no such devcontainer", http.StatusNotFound)
-			return
-		}
-
-		done := make(chan error, 1)
-		// If the container was torn down between lookup and post, the mailbox
-		// is closed and the task would never run; don't wait on it.
-		if !e.mbox.post(func() { done <- d.recreate_session(d.base_ctx, e) }) {
-			http.Error(w, "container is no longer tracked", http.StatusConflict)
-			return
-		}
-		if err := <-done; err != nil {
-			http.Error(w, err.Error(), http.StatusConflict)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-	})
-
-	// Stop and remove a devcontainer, addressed by display name. Backs
-	// `cld down`. The final backup and removal run on the container's worker
-	// so the copy-out finishes before Docker drops the container.
-	mux.HandleFunc("POST /down", func(w http.ResponseWriter, r *http.Request) {
-		name := r.URL.Query().Get("name")
-		if name == "" {
-			http.Error(w, "name required", http.StatusBadRequest)
-			return
-		}
-		e := d.by_name(name)
-		if e == nil {
-			http.Error(w, "no such devcontainer", http.StatusNotFound)
-			return
-		}
-
-		done := make(chan error, 1)
-		if !e.mbox.post(func() { done <- d.down(d.base_ctx, e) }) {
-			http.Error(w, "container is no longer tracked", http.StatusConflict)
-			return
-		}
-		if err := <-done; err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-	})
-
+	mux.HandleFunc("GET /items", d.handle_items)
+	mux.HandleFunc("GET /info", d.handle_info)
+	mux.HandleFunc("GET /session/attach", d.handle_attach)
+	mux.HandleFunc("POST /notify/exited", d.handle_notify_exited)
+	mux.HandleFunc("POST /session/new", d.handle_session_new)
+	mux.HandleFunc("POST /down", d.handle_down)
 	return mux
+}
+
+// scoped_api is the control plane exposed to ONE container through the
+// in-container relay. Every operation is confined to that container's own
+// session: it may list and attach to itself, and recreate or down itself, but
+// can neither see nor act on any other project. This keeps the relay from being
+// a cross-container lateral path when a managed container runs untrusted code.
+// The identity is bound here (self_id), not supplied by the caller, so a
+// container cannot address another.
+func (d *Daemon) scoped_api(self_id string) http.Handler {
+	self_name := func() string {
+		if e := d.lookup(self_id); e != nil {
+			return e.snapshot().Name
+		}
+		return ""
+	}
+	// only_self rejects a request whose ?name= is not this container's own.
+	only_self := func(h http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if n := self_name(); n == "" || r.URL.Query().Get("name") != n {
+				http.Error(w, "forbidden: not your session", http.StatusForbidden)
+				return
+			}
+			h(w, r)
+		}
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /info", d.handle_info)
+	mux.HandleFunc("GET /items", func(w http.ResponseWriter, r *http.Request) {
+		mine := make([]Item, 0, 1)
+		for _, it := range d.Items() {
+			if it.ID == self_id {
+				mine = append(mine, it)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"items": mine})
+	})
+	mux.HandleFunc("GET /session/attach", only_self(d.handle_attach))
+	mux.HandleFunc("POST /session/new", only_self(d.handle_session_new))
+	mux.HandleFunc("POST /down", only_self(d.handle_down))
+	mux.HandleFunc("POST /notify/exited", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("container") != self_id {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		d.handle_notify_exited(w, r)
+	})
+	return mux
+}
+
+func (d *Daemon) handle_items(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"items": d.Items()})
+}
+
+func (d *Daemon) handle_info(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(Info{
+		ContainerID: d.self_ctr,
+		TmuxSocket:  d.cfg.TmuxSocketPath(),
+		UID:         os.Getuid(),
+		APIAttach:   d.self_ctr != "",
+	})
+}
+
+func (d *Daemon) handle_notify_exited(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("container")
+	if id == "" {
+		http.Error(w, "container required", http.StatusBadRequest)
+		return
+	}
+
+	gen := r.URL.Query().Get("gen")
+	code, _ := strconv.Atoi(r.URL.Query().Get("code"))
+
+	// Look up only; a stale notify for an unknown container must not create a
+	// phantom entry in the listing.
+	e := d.lookup(id)
+	if e == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	e.mbox.post(func() {
+		if e.item.Name == "" || e.item.Status == StatusStopped {
+			return
+		}
+		// Ignore a notify from a superseded generation: the container has
+		// since restarted and a fresh session exists.
+		if gen != "" && gen != e.started_at {
+			return
+		}
+		if e.item.Workspace != "" {
+			d.copy_out(d.base_ctx, e, dirty{global: true, project: true})
+		}
+		if code != 0 {
+			// A non-zero exit is a crash or a failed launch, not the user
+			// quitting: surface it as failed instead of masking it as a clean
+			// end. session_failed keeps it settled so a reconcile does not
+			// silently flip it back to ready; `cld it --new` retries.
+			e.session_failed = true
+			e.item.Status = StatusFailed
+			e.item.Error = fmt.Sprintf("session exited with status %d", code)
+			e.publish()
+			d.log.Warn("session failed",
+				slog.String("name", e.item.Name), slog.Int("code", code))
+			return
+		}
+		// A clean exit is the user ending the session. Persist it so a daemon
+		// restart does not resurrect it.
+		e.session_failed = false
+		d.sessions.set(id, sessionState{Gen: e.started_at, Ended: true})
+		e.item.Status = StatusSessionEnded
+		e.item.Error = ""
+		e.publish()
+		d.log.Info("session exited", slog.String("name", e.item.Name))
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handle_session_new recreates a session the user ended, by display name. Backs
+// `cld it --new`.
+func (d *Daemon) handle_session_new(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		http.Error(w, "name required", http.StatusBadRequest)
+		return
+	}
+	e := d.by_name(name)
+	if e == nil {
+		http.Error(w, "no such devcontainer", http.StatusNotFound)
+		return
+	}
+
+	done := make(chan error, 1)
+	// If the container was torn down between lookup and post, the mailbox is
+	// closed and the task would never run; don't wait on it.
+	if !e.mbox.post(func() { done <- d.recreate_session(d.base_ctx, e) }) {
+		http.Error(w, "container is no longer tracked", http.StatusConflict)
+		return
+	}
+	if err := <-done; err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handle_down stops and removes a devcontainer, by display name. Backs
+// `cld down`. The final backup and removal run on the container's worker so the
+// copy-out finishes before Docker drops the container.
+func (d *Daemon) handle_down(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		http.Error(w, "name required", http.StatusBadRequest)
+		return
+	}
+	e := d.by_name(name)
+	if e == nil {
+		http.Error(w, "no such devcontainer", http.StatusNotFound)
+		return
+	}
+
+	done := make(chan error, 1)
+	if !e.mbox.post(func() { done <- d.down(d.base_ctx, e) }) {
+		http.Error(w, "container is no longer tracked", http.StatusConflict)
+		return
+	}
+	if err := <-done; err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // by_name finds a tracked entry by its display name.

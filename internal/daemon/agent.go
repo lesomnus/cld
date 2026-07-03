@@ -7,11 +7,13 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"path"
 	"strings"
 	"time"
 
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/lesomnus/cld/internal/agentx"
 	"github.com/lesomnus/cld/internal/dockerx"
 	"github.com/moby/moby/api/pkg/stdcopy"
@@ -24,6 +26,14 @@ const AgentSocketName = "agent.sock"
 
 func (e *entry) agent_sock() string {
 	return path.Join(e.cfg_dir, AgentSocketName)
+}
+
+// api_sock is where the daemon relays its own control API inside the container:
+// the default path an in-container `cld` dials for the daemon
+// (<cache>/cld/cld.sock, cache resolved like os.UserCacheDir), so `cld it`
+// there needs no configuration.
+func (e *entry) api_sock() string {
+	return path.Join(e.cache_home, "cld", "cld.sock")
 }
 
 // agent_source returns the socket path of the ssh-agent to forward, resolved
@@ -84,25 +94,57 @@ func (d *Daemon) install_gitconfig(ctx context.Context, e *entry, id string) err
 	return nil
 }
 
-// relay_agent keeps `cld x agent` alive in the container and bridges its
-// streams to the host ssh-agent. Only meaningful when the container can run
-// cld (arch match); on mismatch there is no relay and SSH_AUTH_SOCK simply
-// points at a socket nobody serves.
+// relay_agent forwards the host ssh-agent into the container (SSH_AUTH_SOCK).
+// relay_api exposes the daemon's own control API there, so `cld` run inside the
+// container (e.g. `cld it`) can reach the daemon. Both use one mechanism —
+// agentx over a `docker exec` stream — differing only in the container-side
+// socket and the daemon-side dial target.
 func (d *Daemon) relay_agent(ctx context.Context, e *entry, id string) {
+	d.relay(ctx, e, id, "agent", []string{path.Join(install_dir, "cld"), "x", "agent", e.agent_sock()}, d.agent_dial)
+}
+
+func (d *Daemon) relay_api(ctx context.Context, e *entry, id string) {
+	if !d.cfg.Auth.RemoteControlEnabled() {
+		return
+	}
+	// Bridge the container's connections to a per-container SCOPED API served
+	// in-process, so the container reaches only its own session — never the full
+	// control socket (which could see or act on every other project). Identity
+	// is bound to id here, not supplied by the container.
+	ln := new_pipe_listener()
+	srv := &http.Server{Handler: d.scoped_api(id)}
+	go srv.Serve(ln)
+	defer srv.Close()
+	defer ln.Close()
+
+	d.relay(ctx, e, id, "api",
+		[]string{path.Join(install_dir, "cld"), "x", "api", e.api_sock()}, ln.dial)
+}
+
+// relay keeps a socket relay alive for the life of the container: each attempt
+// runs the given container-side listener command and bridges its accepted
+// connections to dial() on the daemon side, retrying while the container runs.
+func (d *Daemon) relay(ctx context.Context, e *entry, id string, kind string, cmd []string, dial func(context.Context) (net.Conn, error)) {
 	for ctx.Err() == nil {
-		err := d.relay_once(ctx, e, id)
+		err := d.relay_once(ctx, id, e.user, cmd, dial)
 		if ctx.Err() != nil {
 			return
 		}
 
 		insp, ierr := d.cli.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
-		if ierr != nil || insp.Container.State == nil || !insp.Container.State.Running {
-			return // container gone; a clean-EOF end here is expected, not an error
+		if ierr != nil {
+			if cerrdefs.IsNotFound(ierr) {
+				return // container really is gone; a clean-EOF end is expected
+			}
+			// A transient inspect failure must not permanently kill the relay
+			// (in-container `cld it` depends on it): fall through and retry.
+		} else if insp.Container.State == nil || !insp.Container.State.Running {
+			return // container stopped
 		}
 
 		// The container is still up, so this really was a relay failure.
 		if err != nil && !errors.Is(err, io.EOF) {
-			d.log.Warn("agent relay error",
+			d.log.Warn(kind+" relay error",
 				slog.String("name", e.item.Name), slog.String("error", err.Error()))
 		}
 
@@ -114,13 +156,13 @@ func (d *Daemon) relay_agent(ctx context.Context, e *entry, id string) {
 	}
 }
 
-func (d *Daemon) relay_once(ctx context.Context, e *entry, id string) error {
+func (d *Daemon) relay_once(ctx context.Context, id string, user string, cmd []string, dial func(context.Context) (net.Conn, error)) error {
 	created, err := d.cli.ExecCreate(ctx, id, client.ExecCreateOptions{
-		User:         e.user,
+		User:         user,
 		AttachStdin:  true,
 		AttachStdout: true,
 		AttachStderr: true,
-		Cmd:          []string{path.Join(install_dir, "cld"), "x", "agent", e.agent_sock()},
+		Cmd:          cmd,
 	})
 	if err != nil {
 		return err
@@ -142,8 +184,8 @@ func (d *Daemon) relay_once(ctx context.Context, e *entry, id string) error {
 		}
 	}()
 
-	// att.Conn writes the exec's stdin (raw frames to `cld x agent`); att.Reader
-	// is the multiplexed stdout that stdcopy demuxes back into frames.
+	// att.Conn writes the exec's stdin (frames to the container listener);
+	// att.Reader is the multiplexed stdout that stdcopy demuxes back to frames.
 	pr, pw := io.Pipe()
 	var errbuf lineBuffer
 	go func() {
@@ -151,7 +193,7 @@ func (d *Daemon) relay_once(ctx context.Context, e *entry, id string) error {
 		pw.CloseWithError(e)
 	}()
 
-	err = agentx.Bridge(ctx, att.Conn, pr, d.agent_dial)
+	err = agentx.Bridge(ctx, att.Conn, pr, dial)
 	if s := errbuf.String(); s != "" {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(s))
 	}

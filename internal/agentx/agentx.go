@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 )
@@ -207,6 +208,9 @@ func (m *mux) demux(r io.Reader, onOpen func(id uint32)) error {
 // socket at path and multiplexes them over out (frames to the daemon) and in
 // (frames from the daemon). It returns when in closes or the context is done.
 func ListenAndServe(ctx context.Context, path string, in io.Reader, out io.Writer) error {
+	// Create the parent dir so callers need not pre-make it (and a transient
+	// mkdir failure is retried with the listener rather than being fatal).
+	os.MkdirAll(filepath.Dir(path), 0o700)
 	os.Remove(path)
 	ln, err := net.Listen("unix", path)
 	if err != nil {

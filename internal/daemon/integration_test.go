@@ -467,6 +467,22 @@ func TestSessionLifecycle(t *testing.T) {
 		})
 	}
 
+	t.Run("the daemon API is reachable from inside the container via the relay", func(t *testing.T) {
+		// An in-container `cld` dials the relayed socket at $HOME/.cache/cld and
+		// reaches the daemon's own API, so `cld ls` there lists this container.
+		var out string
+		wait_for(t, 20*time.Second, "in-container cld via api relay", func() bool {
+			o, code, err := dockerx.ExecOutput(t.Context(), cli, ctr, "0",
+				[]string{"sh", "-c", "HOME=/root /usr/local/bin/cld ls"})
+			if err != nil || code != 0 {
+				return false
+			}
+			out = o
+			return strings.Contains(o, name)
+		})
+		require.Contains(t, out, name)
+	})
+
 	t.Run("a non-zero session exit is surfaced as failed", func(t *testing.T) {
 		require.NoError(t, NotifyExited(context.Background(), cfg.SocketPath(), id, "", 1))
 		wait_for(t, 10*time.Second, "failed", func() bool {

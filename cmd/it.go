@@ -46,20 +46,41 @@ func NewCmdIt() *xli.Command {
 			// container before we hand the terminal over.
 			prepareHostShare(c)
 
-			// Ask the daemon where the tmux server lives. When the daemon runs
-			// in a container, attach through a docker exec into it — the host
-			// then needs no tmux at all. Without a reachable daemon, fall back
-			// to a local attach so `cld it` keeps working while only the
-			// daemon is down.
+			// Ask the daemon where the tmux server lives and how to attach.
+			// When the daemon runs in a container this host can see, attach
+			// through a docker exec into it — the host needs no tmux at all.
+			// When we cannot see that container (e.g. we ARE a managed
+			// container reaching the daemon through the in-container relay),
+			// let the daemon stream the attach over the control socket. Without
+			// a reachable daemon, fall back to a local tmux attach.
 			ictx, cancel := context.WithTimeout(ctx, 2*time.Second)
 			info, ierr := daemon.FetchInfo(ictx, c.SocketPath())
 			cancel()
-			if ierr == nil && info.ContainerID != "" {
+			if ierr == nil && info.ContainerID != "" && daemon_container_reachable(ctx, info.ContainerID) {
 				return attach_via_exec(ctx, info, session, name, c.SocketPath())
+			}
+			if ierr == nil && info.APIAttach {
+				return daemon.AttachSession(ctx, c.SocketPath(), name)
 			}
 			return attach_local(ctx, c.TmuxSocketPath(), session, name, c.SocketPath())
 		}),
 	}
+}
+
+// daemon_container_reachable reports whether this host's docker can see the
+// daemon's own container, i.e. whether a docker-exec attach into it is viable.
+// It is false when `cld it` runs inside a managed container reaching the daemon
+// only through the relay, which is what routes such calls to the API attach.
+func daemon_container_reachable(ctx context.Context, id string) bool {
+	cli, err := client.New(client.FromEnv)
+	if err != nil {
+		return false
+	}
+	defer cli.Close()
+	ictx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	_, err = cli.ContainerInspect(ictx, id, client.ContainerInspectOptions{})
+	return err == nil
 }
 
 // attach_local runs the local tmux client against the shared server socket:

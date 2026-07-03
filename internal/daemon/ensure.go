@@ -164,6 +164,9 @@ func (d *Daemon) ensure_(ctx context.Context, e *entry) error {
 			if d.cfg.Auth.ForwardAgentEnabled() {
 				go d.relay_agent(wctx, e, id)
 			}
+			// Expose the daemon's control API inside the container so `cld it`
+			// run there can reach and attach to this session.
+			go d.relay_api(wctx, e, id)
 		} else {
 			go d.poll_container(wctx, e)
 		}
@@ -222,10 +225,12 @@ func (d *Daemon) resolve(ctx context.Context, e *entry, id string, labels map[st
 		user = c.Config.User
 	}
 
-	// One probe yields uid, gid, home, and libc, each on its own line, as the
-	// target user (the musl check works regardless of user).
+	// One probe yields uid, gid, home, the cache dir, and libc, each on its own
+	// line, as the target user (the musl check works regardless of user). The
+	// cache dir mirrors Go's os.UserCacheDir so the relay socket lands where an
+	// in-container `cld` looks for the daemon.
 	out, code, err := dockerx.ExecOutput(ctx, d.cli, id, user, []string{
-		"sh", "-c", `id -u; id -g; printf '%s\n' "$HOME"; ` +
+		"sh", "-c", `id -u; id -g; printf '%s\n' "$HOME"; printf '%s\n' "${XDG_CACHE_HOME:-$HOME/.cache}"; ` +
 			`if [ -e /lib/ld-musl-x86_64.so.1 ] || [ -e /lib/ld-musl-aarch64.so.1 ]; then echo musl; else echo gnu; fi`,
 	})
 	if err != nil {
@@ -235,7 +240,7 @@ func (d *Daemon) resolve(ctx context.Context, e *entry, id string, labels map[st
 		return fmt.Errorf("probe user %q: exit %d: %s", user, code, out)
 	}
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	if len(lines) != 4 {
+	if len(lines) != 5 {
 		return fmt.Errorf("probe user %q: unexpected output %q", user, out)
 	}
 	e.uid, _ = strconv.Atoi(strings.TrimSpace(lines[0]))
@@ -244,6 +249,10 @@ func (d *Daemon) resolve(ctx context.Context, e *entry, id string, labels map[st
 	if e.home == "" || e.home == "/" {
 		return fmt.Errorf("user %q has no usable home", user)
 	}
+	e.cache_home = lines[3]
+	if e.cache_home == "" {
+		e.cache_home = e.home + "/.cache"
+	}
 	// Pin the resolved uid so every later exec targets the same user even when
 	// the default user was used (empty string) at probe time.
 	e.user = user
@@ -251,7 +260,7 @@ func (d *Daemon) resolve(ctx context.Context, e *entry, id string, labels map[st
 		e.user = strings.TrimSpace(lines[0])
 	}
 	e.cfg_dir = claude.ConfigDirIn(e.home)
-	musl := lines[3] == "musl"
+	musl := lines[4] == "musl"
 
 	mounts := make([]devc.Mount, 0, len(c.Mounts))
 	for _, m := range c.Mounts {

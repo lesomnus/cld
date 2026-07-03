@@ -31,6 +31,7 @@ func NewCmdX() *xli.Command {
 			new_cmd_x_exec(),
 			new_cmd_x_watch(),
 			new_cmd_x_agent(),
+			new_cmd_x_api(),
 		},
 		Handler: xli.RequireSubcommand(),
 	}
@@ -126,6 +127,33 @@ func new_cmd_x_agent() *xli.Command {
 	return &xli.Command{
 		Name:  "agent",
 		Brief: "serve an ssh-agent socket, relaying connections to the daemon over stdio",
+		Args: arg.Args{
+			&arg.String{Name: "socket", Brief: "unix socket path to listen on"},
+		},
+		Handler: xli.OnRun(func(ctx context.Context, cmd *xli.Command, next xli.Next) error {
+			sock := arg.MustGet[string](cmd, "socket")
+
+			ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+			defer stop()
+
+			err := agentx.ListenAndServe(ctx, sock, os.Stdin, os.Stdout)
+			if err == context.Canceled {
+				return nil
+			}
+			return err
+		}),
+	}
+}
+
+// new_cmd_x_api serves the container-side end of the daemon's control-API
+// relay: it listens on a unix socket and multiplexes each connection over this
+// exec's stdio to the daemon, which bridges it to its own API socket. Identical
+// transport to `cld x agent`; separate for a clear intent and an independent
+// socket. An in-container `cld` dials this socket to reach the daemon.
+func new_cmd_x_api() *xli.Command {
+	return &xli.Command{
+		Name:  "api",
+		Brief: "serve the daemon control-API relay socket, over this exec's stdio",
 		Args: arg.Args{
 			&arg.String{Name: "socket", Brief: "unix socket path to listen on"},
 		},

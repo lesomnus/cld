@@ -54,12 +54,13 @@ type entry struct {
 	item Item                 // worker-owned canonical state
 	snap atomic.Pointer[Item] // published copy for Items()
 
-	user     string
-	uid      int
-	gid      int
-	home     string
-	cfg_dir  string
-	dev_name string // devcontainer.json "name", or "" if unset
+	user       string
+	uid        int
+	gid        int
+	home       string
+	cache_home string // $XDG_CACHE_HOME or $HOME/.cache; parent of the relay socket
+	cfg_dir    string
+	dev_name   string // devcontainer.json "name", or "" if unset
 
 	platform release.Platform
 	arch_ok  bool // container arch == host arch; self-copy and watcher possible

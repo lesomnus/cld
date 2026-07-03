@@ -47,11 +47,25 @@ type AuthConfig struct {
 	// keep the agent off-limits to container code. Pointer so an unset value
 	// still defaults to true.
 	ForwardAgent *bool `yaml:"forward_agent"`
+
+	// RemoteControl exposes the daemon's control API inside each managed
+	// container (over a docker-exec relay), so `cld it`/`cld ls` run there can
+	// reach the daemon. Each container's relay is scoped to its own session, so
+	// it cannot see or touch other projects. Enabled by default; set false to
+	// keep the control plane off-limits to container code entirely. Pointer so
+	// an unset value still defaults to true.
+	RemoteControl *bool `yaml:"remote_control"`
 }
 
 // ForwardAgentEnabled reports whether ssh-agent forwarding is on (default true).
 func (c AuthConfig) ForwardAgentEnabled() bool {
 	return c.ForwardAgent == nil || *c.ForwardAgent
+}
+
+// RemoteControlEnabled reports whether the in-container API relay is on
+// (default true).
+func (c AuthConfig) RemoteControlEnabled() bool {
+	return c.RemoteControl == nil || *c.RemoteControl
 }
 
 type UpConfig struct {
