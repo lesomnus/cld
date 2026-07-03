@@ -33,11 +33,19 @@ func (s *Server) HasSession(ctx context.Context, name string) (bool, error) {
 }
 
 // NewSession creates a detached session running the given command line.
-// The command is passed as a single shell command string.
+// The command is passed as a single shell command string. remain-on-exit is
+// enabled so a session whose command exits (the user ends claude) stays
+// attachable, showing its final screen, instead of vanishing.
 func (s *Server) NewSession(ctx context.Context, name string, command string) error {
 	out, err := s.run(ctx, "new-session", "-d", "-s", name, command)
 	if err != nil {
 		return fmt.Errorf("tmux new-session: %w: %s", err, out)
+	}
+	// remain-on-exit is a window option, so it needs a window target (a plain
+	// session name resolves to its active window; "=name" is a session target
+	// and is rejected here).
+	if out, err := s.run(ctx, "set-window-option", "-t", name, "remain-on-exit", "on"); err != nil {
+		return fmt.Errorf("tmux set remain-on-exit: %w: %s", err, out)
 	}
 	return nil
 }

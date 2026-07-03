@@ -3,7 +3,10 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path"
@@ -72,6 +75,12 @@ func (d *Daemon) ensure_(ctx context.Context, e *entry, allow_session bool) erro
 		e.item.Name = d.unique_name(id, devc.DisplayName(local_folder))
 	}
 
+	// A new container generation (restart) re-opens the session decision.
+	if c.State.StartedAt != e.started_at {
+		e.started_at = c.State.StartedAt
+		e.session_done = false
+	}
+
 	// A container that already reached ready and has its session should not
 	// pay the full provisioning cost on every reconcile; a user-ended
 	// session must keep its status too.
@@ -109,9 +118,22 @@ func (d *Daemon) ensure_(ctx context.Context, e *entry, allow_session bool) erro
 		return fmt.Errorf("prepare state: %w", err)
 	}
 
-	if allow_session && !e.session_done {
-		if err := d.ensure_session(ctx, e, id); err != nil {
-			return fmt.Errorf("session: %w", err)
+	if !e.session_done {
+		// Suppress recreation of a session the user ended in this generation,
+		// even across a daemon restart (the record is on disk).
+		st := d.sessions.get(id)
+		if st.Ended && st.Gen == e.started_at {
+			e.item.Status = StatusSessionEnded
+		} else {
+			if err := d.ensure_session(ctx, e, id); err != nil {
+				return fmt.Errorf("session: %w", err)
+			}
+			// A live session exists again (e.g. after a container restart of a
+			// previously ended container), so clear a stale session-ended
+			// status; the promotion below sets it to ready.
+			if e.item.Status == StatusSessionEnded {
+				e.item.Status = StatusProvisioning
+			}
 		}
 		e.session_done = true
 	}
@@ -164,6 +186,7 @@ func (d *Daemon) stop(ctx context.Context, e *entry) {
 // the container is gone for good, so finalize and drop the entry.
 func (d *Daemon) teardown(ctx context.Context, e *entry) {
 	d.stop(ctx, e)
+	d.sessions.clear(e.id)
 	d.remove(e)
 	d.log.Info("retired", slog.String("id", short(e.id)), slog.String("name", e.item.Name))
 }
@@ -179,8 +202,11 @@ func (d *Daemon) resolve(ctx context.Context, e *entry, id string, labels map[st
 		user = "1000"
 	}
 
+	// One probe yields uid, gid, home, and libc, each on its own line, as the
+	// target user (the musl check works regardless of user).
 	out, code, err := dockerx.ExecOutput(ctx, d.cli, id, user, []string{
-		"sh", "-c", `echo "$(id -u):$(id -g):$HOME"`,
+		"sh", "-c", `id -u; id -g; printf '%s\n' "$HOME"; ` +
+			`if [ -e /lib/ld-musl-x86_64.so.1 ] || [ -e /lib/ld-musl-aarch64.so.1 ]; then echo musl; else echo gnu; fi`,
 	})
 	if err != nil {
 		return err
@@ -188,18 +214,19 @@ func (d *Daemon) resolve(ctx context.Context, e *entry, id string, labels map[st
 	if code != 0 {
 		return fmt.Errorf("probe user %q: exit %d: %s", user, code, out)
 	}
-	parts := strings.SplitN(strings.TrimSpace(out), ":", 3)
-	if len(parts) != 3 {
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 4 {
 		return fmt.Errorf("probe user %q: unexpected output %q", user, out)
 	}
 	e.user = user
-	e.uid, _ = strconv.Atoi(parts[0])
-	e.gid, _ = strconv.Atoi(parts[1])
-	e.home = parts[2]
+	e.uid, _ = strconv.Atoi(strings.TrimSpace(lines[0]))
+	e.gid, _ = strconv.Atoi(strings.TrimSpace(lines[1]))
+	e.home = lines[2]
 	if e.home == "" || e.home == "/" {
 		return fmt.Errorf("user %q has no usable home", user)
 	}
 	e.cfg_dir = path.Join(e.home, claude.ConfigDirName)
+	musl := lines[3] == "musl"
 
 	mounts := make([]devc.Mount, 0, len(c.Mounts))
 	for _, m := range c.Mounts {
@@ -225,14 +252,6 @@ func (d *Daemon) resolve(ctx context.Context, e *entry, id string, labels map[st
 	if arch == "" {
 		arch = runtime.GOARCH
 	}
-
-	out, code, err = dockerx.ExecOutput(ctx, d.cli, id, "", []string{
-		"sh", "-c", `if [ -e /lib/ld-musl-x86_64.so.1 ] || [ -e /lib/ld-musl-aarch64.so.1 ]; then echo musl; else echo gnu; fi`,
-	})
-	if err != nil {
-		return err
-	}
-	musl := code == 0 && strings.TrimSpace(out) == "musl"
 
 	platform, err := release.PlatformFor(arch, musl)
 	if err != nil {
@@ -292,7 +311,9 @@ func (d *Daemon) install_self(ctx context.Context, id string) error {
 // install_binary copies a host binary into install_dir/name unless a
 // correctly-sized copy is already there. It writes to a temp name and
 // renames into place inside the container, so an interrupted copy never
-// leaves a truncated binary at the final path.
+// leaves a truncated binary at the final path, then verifies the installed
+// bytes against the host file's sha256 (best effort; skipped if the container
+// lacks sha256sum).
 func (d *Daemon) install_binary(ctx context.Context, id string, src string, name string) error {
 	f, err := os.Open(src)
 	if err != nil {
@@ -311,6 +332,14 @@ func (d *Daemon) install_binary(ctx context.Context, id string, src string, name
 		return nil
 	}
 
+	sum, err := sha256_file(f)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+
 	tmp := ".cld-" + name + ".tmp"
 	if err := dockerx.CopyFileFromHost(ctx, d.cli, id, install_dir, tmp, 0o755, f, fi.Size()); err != nil {
 		return err
@@ -324,7 +353,27 @@ func (d *Daemon) install_binary(ctx context.Context, id string, src string, name
 	if code != 0 {
 		return fmt.Errorf("install %s: exit %d: %s", name, code, out)
 	}
+
+	// Verify the installed bytes match the source; catches copy corruption.
+	got, code, err := dockerx.ExecOutput(ctx, d.cli, id, "0", []string{
+		"sh", "-c", "sha256sum " + tmuxx.Quote(dst) + " 2>/dev/null | cut -d' ' -f1",
+	})
+	if err != nil {
+		return err
+	}
+	got = strings.TrimSpace(got)
+	if code == 0 && got != "" && got != sum {
+		return fmt.Errorf("checksum mismatch after installing %s: got %s want %s", name, got, sum)
+	}
 	return nil
+}
+
+func sha256_file(r io.Reader) (string, error) {
+	h := sha256.New()
+	if _, err := io.Copy(h, r); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // prepare_state restores the backup into a fresh container and seeds the
@@ -424,10 +473,17 @@ func (d *Daemon) ensure_session(ctx context.Context, e *entry, id string) error 
 		d.self, "x", "exec",
 		"--user", e.user,
 		"--workdir", e.item.Workspace,
-		"--config-dir", e.cfg_dir,
-		"--notify", d.cfg.SocketPath(),
-		id, "--",
 	}
+	for _, kv := range d.session_env(e) {
+		argv = append(argv, "--env", kv)
+	}
+	if f := d.cfg.Auth.OAuthTokenFile; f != "" {
+		argv = append(argv, "--oauth-token-file", f)
+	}
+	argv = append(argv,
+		"--notify", d.cfg.SocketPath(),
+		"--session-gen", e.started_at,
+		id, "--")
 	argv = append(argv, remote...)
 
 	command := tmuxx.QuoteAll(argv)
@@ -438,7 +494,40 @@ func (d *Daemon) ensure_session(ctx context.Context, e *entry, id string) error 
 	if err := d.tmux.NewSession(ctx, name, command); err != nil {
 		return err
 	}
+	// Record that a live session now exists for this generation.
+	d.sessions.set(id, sessionState{Gen: e.started_at, Ended: false})
 	d.log.Info("session created", slog.String("name", name))
+	return nil
+}
+
+// session_env is the environment injected into every claude session. The
+// daemon owns this policy in one place; the pane client just forwards it.
+func (d *Daemon) session_env(e *entry) []string {
+	return []string{
+		"CLAUDE_CONFIG_DIR=" + e.cfg_dir,
+		"DISABLE_AUTOUPDATER=1",
+		"TERM=xterm-256color",
+	}
+}
+
+// recreate_session forces a fresh session for a container whose session the
+// user had ended, backing `cld it --new`.
+func (d *Daemon) recreate_session(ctx context.Context, e *entry) error {
+	if e.cfg_dir == "" || e.item.Workspace == "" {
+		return fmt.Errorf("container %q is not provisioned", e.item.Name)
+	}
+	d.sessions.clear(e.id)
+	if e.item.Name != "" {
+		d.tmux.KillSession(ctx, devc.SessionName(e.item.Name))
+	}
+	if err := d.ensure_session(ctx, e, e.id); err != nil {
+		return err
+	}
+	e.session_done = true
+	if e.item.Status == StatusSessionEnded {
+		e.item.Status = StatusReady
+	}
+	e.publish()
 	return nil
 }
 

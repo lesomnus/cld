@@ -26,6 +26,7 @@ type Config struct {
 	// (the "devcontainer.local_folder" label) to exclude from provisioning.
 	Ignore []string `yaml:"ignore"`
 
+	Auth    AuthConfig    `yaml:"auth"`
 	Release ReleaseConfig `yaml:"release"`
 	Sync    SyncConfig    `yaml:"sync"`
 

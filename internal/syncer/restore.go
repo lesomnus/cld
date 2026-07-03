@@ -151,26 +151,47 @@ func add_tree_mapped(tw *tar.Writer, src string, prefix string, uid, gid int, re
 			})
 
 		case fi.Mode().IsRegular():
-			data, err := os.ReadFile(p)
-			if err != nil {
-				return err
-			}
-			if rewrite != nil {
-				data = rewrite(rel, data)
-			}
-			err = tw.WriteHeader(&tar.Header{
+			// Files that need a path rewrite are read whole (transcripts);
+			// everything else is streamed to avoid holding large files (e.g.
+			// credentials caches) in memory.
+			hdr := &tar.Header{
 				Typeflag: tar.TypeReg,
 				Name:     name,
 				Mode:     int64(fi.Mode() & 0o777),
 				Uid:      uid,
 				Gid:      gid,
-				Size:     int64(len(data)),
 				ModTime:  fi.ModTime(),
-			})
+			}
+			if rewrite != nil {
+				data, err := os.ReadFile(p)
+				if err != nil {
+					return err
+				}
+				data = rewrite(rel, data)
+				hdr.Size = int64(len(data))
+				if err := tw.WriteHeader(hdr); err != nil {
+					return err
+				}
+				_, err = tw.Write(data)
+				return err
+			}
+			hdr.Size = fi.Size()
+			if err := tw.WriteHeader(hdr); err != nil {
+				return err
+			}
+			src, err := os.Open(p)
 			if err != nil {
 				return err
 			}
-			_, err = tw.Write(data)
+			// Write exactly hdr.Size bytes regardless of the file changing
+			// under us (a concurrent copy-out of the same project may append):
+			// a grow is truncated to the size stated in the header, a shrink is
+			// zero-padded, so the tar stream is never corrupted.
+			n, err := io.CopyN(tw, src, hdr.Size)
+			src.Close()
+			if err == io.EOF {
+				_, err = tw.Write(make([]byte, hdr.Size-n))
+			}
 			return err
 		}
 		return nil

@@ -119,7 +119,7 @@ docker event를 listen해서 devcontainer가 뜨면, 호스트에 캐시해둔 c
 
 - 이름 (= `basename(devcontainer.local_folder)`, 충돌 시 `-<짧은 ID>` 접미사)
 - container ID
-- 상태: `provisioning` / `ready` / `session-ended`(사용자가 종료) / `failed`(사유 로그)
+- 상태: `provisioning` / `ready` / `stopped`(컨테이너 정지) / `session-ended`(사용자가 종료) / `failed`(사유 로그)
 - 프로비저닝된 claude 버전
 
 compose에서 워크스페이스 컨테이너만 나오는 건 라벨 필터로 자동 충족.
@@ -129,7 +129,7 @@ compose에서 워크스페이스 컨테이너만 나오는 건 라벨 필터로 
 `cld it <이름>` = `tmux -S ~/.cache/cld/tmux.sock attach -t cld-<이름>` 을 `syscall.Exec`으로 실행. 데몬 불필요, docker 권한도 불필요.
 
 - 세션이 없으면 상태에 따라 힌트 출력: 컨테이너가 안 돌고 있으면 그 사실을, 사용자가 종료한 세션이면 재생성 방법을 안내.
-- (옵션) `cld it --new <이름>`: 데몬에 세션 재생성 요청 후 attach.
+- `cld it --new <이름>`: 데몬에 세션 재생성 요청 후 attach.
 
 ## 사후 마운트에 대해 (조사 결과)
 
@@ -145,6 +145,25 @@ compose에서 워크스페이스 컨테이너만 나오는 건 라벨 필터로 
 - 개발 devcontainer에 **DinD 사이드카**(`docker:28-dind`, TLS 없이 `tcp://docker:2375`)를 붙이고 `DOCKER_HOST`로 가리킨다 — `.devcontainer/docker-compose.yaml`에 반영됨. cld는 SDK로 API만 쓰므로 로컬 소켓과 원격 엔진의 차이가 없다.
 - 통합 테스트: 사이드카 엔진에 `devcontainer.local_folder` 라벨만 단 가짜 devcontainer 컨테이너를 띄워 감지 → 복사 → 세션 생성 → 정리 전 과정을 검증한다. 실제 claude 다운로드는 더미 바이너리로 대체할 수 있게 다운로드 base URL을 config로 뺀다.
 - 순수 로직(이름 도출, 라벨/마운트 파싱, 버전 비교, `.claude.json` 병합)은 일반 unit test.
+
+## 인증과 마운트 제거 (구현됨)
+
+- `auth.oauth_token_file`(config)에 `claude setup-token`으로 만든 토큰 파일 경로를 넣으면, cld가 세션마다 `CLAUDE_CODE_OAUTH_TOKEN`을 주입한다. 토큰은 파일에서 읽어 컨테이너 exec env로만 전달 — tmux 명령이나 `ps`에는 파일 경로만 노출된다(파일은 0600 권장).
+- 이걸로 **`~/.claude` bind mount 없이도 새 컨테이너가 무인 인증**된다. 백업의 global(`credentials`)이 복원되므로 두 번째 컨테이너부터는 토큰 없이도 되고, 첫 컨테이너는 토큰으로 커버된다.
+- 이 저장소 자신의 dev 컨테이너(`.devcontainer/docker-compose.yaml`)는 개발 편의상 `~/.claude` 마운트를 그대로 둔다(cld가 이 컨테이너를 관리하지 않으므로). cld가 관리하는 다른 devcontainer들에서는 `oauth_token_file` 설정 후 마운트를 빼면 된다.
+
+## 세션 수명 (구현됨)
+
+- 세션은 `remain-on-exit on`으로 만들어져, 사용자가 claude를 종료해도 pane이 최종 화면을 남긴 채 attach 가능하다(세션이 즉시 사라지지 않음).
+- **사용자가 종료한 세션은 되살리지 않는다.** 컨테이너 `State.StartedAt`을 세대 키로 삼아 "이 세대에서 사용자가 종료함"을 디스크(`~/.cache/cld/sessions/<id>.json`)에 기록 → 데몬을 재시작해도 reconcile이 세션을 재생성하지 않는다. 컨테이너가 재시작(새 StartedAt)되면 새 세션을 만든다.
+- `cld it --new <이름>`: 데몬에 세션 재생성을 요청한 뒤 attach. 사용자가 닫았던 세션을 다시 연다.
+
+## 로드맵 (미구현)
+
+- **cross-restart 스크롤백 유지**: 컨테이너 재시작 시 `respawn-pane`으로 이전 pane 버퍼를 살리는 것. 대화 내용은 `--continue`로 복원되므로 순수 터미널 스크롤백만의 이득이고, orphan 세션 정리 로직이 필요해 v1에서 제외. 필요해지면 추가.
+- **배포**: `cld serve`용 systemd user unit.
+- **CI**: DinD 통합 테스트를 `.github/workflows/ci.yaml`에 연결(docker service 필요). 현재는 로컬 DinD 사이드카로만 실행.
+- **라이브 마운트**: 위 "사후 마운트" 3번(mount-namespace 수술). 진짜 양방향 실시간 공유가 필요해질 때만.
 
 ## 하지 않는 것
 

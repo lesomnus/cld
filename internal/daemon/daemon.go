@@ -65,7 +65,8 @@ type entry struct {
 	bind_mounted bool // config dir is a host bind mount; sync is not ours to do
 
 	restored     bool
-	session_done bool // session was created for the current start generation
+	session_done bool   // session was evaluated for the current start generation
+	started_at   string // container State.StartedAt of the current generation
 	version      string
 
 	watch_stop context.CancelFunc // cancels the watcher and sync goroutines
@@ -99,7 +100,8 @@ type Daemon struct {
 	rel  *release.Manager
 	log  *slog.Logger
 
-	self string // path of the cld executable, reused as pane client and watcher
+	self     string // path of the cld executable, reused as pane client and watcher
+	sessions *sessionStore
 
 	base_ctx context.Context // long-lived; parents watcher/sync goroutines
 	wg       sync.WaitGroup  // tracks worker goroutines
@@ -129,9 +131,10 @@ func New(cfg *config.Config, cli *client.Client, log *slog.Logger) (*Daemon, err
 			Channel: cfg.Release.Channel,
 			Log:     log,
 		},
-		log:     log,
-		self:    self,
-		entries: map[string]*entry{},
+		log:      log,
+		self:     self,
+		sessions: &sessionStore{dir: filepath.Join(cfg.CacheDir, "sessions")},
+		entries:  map[string]*entry{},
 	}, nil
 }
 

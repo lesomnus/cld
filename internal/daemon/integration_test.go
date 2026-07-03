@@ -258,14 +258,20 @@ func TestDaemon(t *testing.T) {
 		require.NoError(t, err)
 		require.True(t, has)
 
-		wait_for(t, 30*time.Second, "claude output in pane", func() bool {
-			out, err := exec.Command(
+		capture := func() string {
+			out, _ := exec.Command(
 				"tmux", "-S", cfg.TmuxSocketPath(),
 				// "=name" is a session target; capture-pane wants a pane target.
 				"capture-pane", "-p", "-t", devc.SessionName(name)+":0",
 			).Output()
-			return err == nil && strings.Contains(string(out), "claude started in /workspace as root")
+			return string(out)
+		}
+		wait_for(t, 30*time.Second, "claude output in pane", func() bool {
+			return strings.Contains(capture(), "claude started in /workspace as root")
 		})
+		// The session env must actually reach the pane (regression: a
+		// mode-gated flag handler silently dropped every --env).
+		require.Contains(t, capture(), "config: /root/.claude")
 	})
 	t.Run("watcher syncs changes out to the backup", func(t *testing.T) {
 		_, code, err := dockerx.ExecOutput(t.Context(), cli, ctr, "", []string{
@@ -333,4 +339,144 @@ func TestDaemon(t *testing.T) {
 			return err == nil && strings.Contains(string(out), "args:--continue")
 		})
 	})
+}
+
+// start_daemon builds a daemon on cfg and runs it until the returned stop is
+// called (which also drains workers).
+func start_daemon(t *testing.T, cfg *config.Config, cli *client.Client, self string) (*Daemon, func()) {
+	t.Helper()
+
+	d, err := New(cfg, cli, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	require.NoError(t, err)
+	d.self = self
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { d.Run(ctx); close(done) }()
+
+	wait_for(t, 10*time.Second, "daemon socket", func() bool {
+		_, err := FetchItems(context.Background(), cfg.SocketPath())
+		return err == nil
+	})
+	return d, func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("daemon did not shut down")
+		}
+	}
+}
+
+func TestSessionLifecycle(t *testing.T) {
+	cli := require_docker(t)
+	pull_image(t, cli)
+	server := fake_release(t, "9.9.9", []byte(fake_claude))
+
+	tmp := t.TempDir()
+	cfg := &config.Config{
+		CacheDir: filepath.Join(tmp, "cache"),
+		DataDir:  filepath.Join(tmp, "data"),
+		Release:  config.ReleaseConfig{BaseURL: server.URL, Channel: "stable", CheckInterval: config.Duration(time.Hour)},
+		Sync:     config.SyncConfig{Debounce: config.Duration(200 * time.Millisecond), FallbackInterval: config.Duration(time.Minute)},
+	}
+	self := build_cld(t)
+	t.Cleanup(func() { exec.Command("tmux", "-S", cfg.TmuxSocketPath(), "kill-server").Run() })
+
+	_, stop := start_daemon(t, cfg, cli, self)
+	started := true
+	defer func() {
+		if started {
+			stop()
+		}
+	}()
+
+	local_folder := fmt.Sprintf("/tmp/proj-%d", time.Now().UnixNano())
+	name := devc.DisplayName(local_folder)
+	ctr := run_devcontainer(t, cli, local_folder)
+
+	wait_for(t, 60*time.Second, "ready", func() bool {
+		it := find_item(must_items(t, cfg), name)
+		return it != nil && it.Status == StatusReady
+	})
+	id := find_item(must_items(t, cfg), name).ID
+
+	endSession := func(t *testing.T) {
+		t.Helper()
+		// Empty gen means "current generation" and is always accepted.
+		require.NoError(t, NotifyExited(context.Background(), cfg.SocketPath(), id, ""))
+		wait_for(t, 10*time.Second, "session-ended", func() bool {
+			it := find_item(must_items(t, cfg), name)
+			return it != nil && it.Status == StatusSessionEnded
+		})
+	}
+
+	t.Run("ending the session marks it session-ended", endSession)
+
+	t.Run("a container restart of an ended container returns to ready", func(t *testing.T) {
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel2()
+		_, err := cli.ContainerRestart(ctx2, ctr, client.ContainerRestartOptions{})
+		require.NoError(t, err)
+
+		// New generation → a fresh session, and the status must not stay
+		// stuck at session-ended.
+		wait_for(t, 30*time.Second, "ready after container restart", func() bool {
+			it := find_item(must_items(t, cfg), name)
+			return it != nil && it.Status == StatusReady
+		})
+		tmux := &tmuxx.Server{Socket: cfg.TmuxSocketPath()}
+		has, err := tmux.HasSession(context.Background(), devc.SessionName(name))
+		require.NoError(t, err)
+		require.True(t, has)
+
+		// Re-end so the next subtest exercises the daemon-restart path.
+		endSession(t)
+	})
+
+	t.Run("a daemon restart does not resurrect the ended session", func(t *testing.T) {
+		stop()
+		started = false
+
+		exec.Command("tmux", "-S", cfg.TmuxSocketPath(), "kill-server").Run()
+
+		_, stop2 := start_daemon(t, cfg, cli, self)
+		defer stop2()
+
+		wait_for(t, 30*time.Second, "item seen after restart", func() bool {
+			return find_item(must_items(t, cfg), name) != nil
+		})
+		// Give reconcile a moment; the status must stay session-ended and no
+		// tmux session must be recreated.
+		time.Sleep(2 * time.Second)
+		it := find_item(must_items(t, cfg), name)
+		require.NotNil(t, it)
+		require.Equal(t, StatusSessionEnded, it.Status)
+
+		tmux := &tmuxx.Server{Socket: cfg.TmuxSocketPath()}
+		has, err := tmux.HasSession(context.Background(), devc.SessionName(name))
+		require.NoError(t, err)
+		require.False(t, has, "ended session must not be resurrected")
+
+		t.Run("it --new recreates the session", func(t *testing.T) {
+			require.NoError(t, RecreateSession(context.Background(), cfg.SocketPath(), name))
+			has, err := tmux.HasSession(context.Background(), devc.SessionName(name))
+			require.NoError(t, err)
+			require.True(t, has)
+
+			it := find_item(must_items(t, cfg), name)
+			require.Equal(t, StatusReady, it.Status)
+		})
+	})
+
+	_ = ctr
+}
+
+func must_items(t *testing.T, cfg *config.Config) []Item {
+	t.Helper()
+	items, err := FetchItems(context.Background(), cfg.SocketPath())
+	if err != nil {
+		return nil
+	}
+	return items
 }

@@ -14,12 +14,16 @@ import (
 	"github.com/lesomnus/cld/internal/tmuxx"
 	"github.com/lesomnus/xli"
 	"github.com/lesomnus/xli/arg"
+	"github.com/lesomnus/xli/flg"
 )
 
 func NewCmdIt() *xli.Command {
 	return &xli.Command{
 		Name:  "it",
 		Brief: "attach to the claude session of a devcontainer",
+		Flags: flg.Flags{
+			&flg.Switch{Name: "new", Brief: "recreate the session if the user had ended it"},
+		},
 		Args: arg.Args{
 			&arg.String{Name: "name", Brief: "devcontainer name as shown by `cld ls`"},
 		},
@@ -29,6 +33,12 @@ func NewCmdIt() *xli.Command {
 
 			tmux := &tmuxx.Server{Socket: c.TmuxSocketPath()}
 			session := devc.SessionName(name)
+
+			if v, _ := flg.Get[bool](cmd, "new"); v {
+				if err := daemon.RecreateSession(ctx, c.SocketPath(), name); err != nil {
+					return err
+				}
+			}
 
 			has, err := tmux.HasSession(ctx, session)
 			if err != nil {

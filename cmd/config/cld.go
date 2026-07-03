@@ -33,6 +33,15 @@ func (d Duration) Std() time.Duration {
 	return time.Duration(d)
 }
 
+type AuthConfig struct {
+	// Path to a host file containing a Claude Code OAuth token (as produced by
+	// `claude setup-token`). When set, the token is injected as
+	// CLAUDE_CODE_OAUTH_TOKEN into each session so a fresh container needs no
+	// interactive login. The path (not the token) is all that appears in the
+	// tmux command; keep the file mode 0600.
+	OAuthTokenFile string `yaml:"oauth_token_file"`
+}
+
 type ReleaseConfig struct {
 	// Base URL of the Claude Code release channel.
 	BaseURL string `yaml:"base_url"`
@@ -73,7 +82,7 @@ func (c *Config) evaluateCld() error {
 
 	// Expand a leading "~" so the documented defaults work when copied
 	// verbatim from cld.yaml into a config file.
-	for _, p := range []*string{&c.CacheDir, &c.DataDir} {
+	for _, p := range []*string{&c.CacheDir, &c.DataDir, &c.Auth.OAuthTokenFile} {
 		v, err := expandTilde(*p)
 		if err != nil {
 			return err

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	urlpkg "net/url"
 	"time"
 )
 
@@ -28,6 +29,8 @@ func (d *Daemon) api() http.Handler {
 			return
 		}
 
+		gen := r.URL.Query().Get("gen")
+
 		// Look up only; a stale notify for an unknown container must not
 		// create a phantom entry in the listing.
 		e := d.lookup(id)
@@ -39,18 +42,70 @@ func (d *Daemon) api() http.Handler {
 			if e.item.Name == "" || e.item.Status == StatusStopped {
 				return
 			}
+			// Ignore a notify from a superseded generation: the container has
+			// since restarted and a fresh session exists.
+			if gen != "" && gen != e.started_at {
+				return
+			}
 			if !e.bind_mounted && e.item.Workspace != "" {
 				d.copy_out(d.base_ctx, e, dirty{global: true, project: true})
 			}
+			// Persist that the user ended this generation's session so a
+			// daemon restart does not resurrect it.
+			d.sessions.set(id, sessionState{Gen: e.started_at, Ended: true})
 			e.item.Status = StatusSessionEnded
-			e.session_done = false
 			e.publish()
 			d.log.Info("session exited", slog.String("name", e.item.Name))
 		})
 		w.WriteHeader(http.StatusNoContent)
 	})
 
+	// Recreate a session the user ended, addressed by display name. Backs
+	// `cld it --new`.
+	mux.HandleFunc("POST /session/new", func(w http.ResponseWriter, r *http.Request) {
+		name := r.URL.Query().Get("name")
+		if name == "" {
+			http.Error(w, "name required", http.StatusBadRequest)
+			return
+		}
+		e := d.by_name(name)
+		if e == nil {
+			http.Error(w, "no such devcontainer", http.StatusNotFound)
+			return
+		}
+
+		done := make(chan error, 1)
+		// If the container was torn down between lookup and post, the mailbox
+		// is closed and the task would never run; don't wait on it.
+		if !e.mbox.post(func() { done <- d.recreate_session(d.base_ctx, e) }) {
+			http.Error(w, "container is no longer tracked", http.StatusConflict)
+			return
+		}
+		if err := <-done; err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	return mux
+}
+
+// by_name finds a tracked entry by its display name.
+func (d *Daemon) by_name(name string) *entry {
+	d.mu.Lock()
+	entries := make([]*entry, 0, len(d.entries))
+	for _, e := range d.entries {
+		entries = append(entries, e)
+	}
+	d.mu.Unlock()
+
+	for _, e := range entries {
+		if e.snapshot().Name == name {
+			return e
+		}
+	}
+	return nil
 }
 
 // NewSocketClient returns an HTTP client that dials the daemon's unix socket.
@@ -92,10 +147,13 @@ func FetchItems(ctx context.Context, socket string) ([]Item, error) {
 	return body.Items, nil
 }
 
-// NotifyExited tells the daemon a session's remote process ended.
-func NotifyExited(ctx context.Context, socket string, container string) error {
+// NotifyExited tells the daemon a session's remote process ended. gen is the
+// generation the session was launched for, so the daemon can ignore a stale
+// notify from a previous container generation.
+func NotifyExited(ctx context.Context, socket string, container string, gen string) error {
 	hc := NewSocketClient(socket)
-	url := "http://cld/notify/exited?container=" + container
+	url := "http://cld/notify/exited?container=" + urlpkg.QueryEscape(container) +
+		"&gen=" + urlpkg.QueryEscape(gen)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
 		return err
@@ -107,4 +165,25 @@ func NotifyExited(ctx context.Context, socket string, container string) error {
 	}
 	io.Copy(io.Discard, res.Body)
 	return res.Body.Close()
+}
+
+// RecreateSession asks the daemon to recreate a devcontainer's session.
+func RecreateSession(ctx context.Context, socket string, name string) error {
+	hc := NewSocketClient(socket)
+	url := "http://cld/session/new?name=" + urlpkg.QueryEscape(name)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		return err
+	}
+
+	res, err := hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("is `cld serve` running? %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 512))
+		return fmt.Errorf("daemon: %s: %s", res.Status, string(body))
+	}
+	return nil
 }
