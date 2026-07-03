@@ -1,19 +1,20 @@
 services:
-  app:
-    image: ghcr.io/lesomnus/cld:${REVISION:-local}
-    command: [greet, lesomnus]
+  cld:
+    image: ghcr.io/lesomnus/cld:${REVISION:-edge}
+    command: [serve]
 
-    network_mode: host
+    # cld provisions and execs into other containers through the Docker API,
+    # so it needs the daemon socket and enough privilege to do so.
     privileged: true
+    environment:
+      - DOCKER_HOST=unix:///var/run/docker.sock
 
     volumes:
-      - ./cld.yaml:/cld.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Share the runtime dir so `cld ls` / `cld it` reach the daemon, and
+      # keep the binary cache across restarts.
+      - ${HOME}/.cache/cld:/root/.cache/cld
+      # Persist conversation backups.
+      - ${HOME}/.local/share/cld:/root/.local/share/cld
 
-    deploy:
-      resources:
-        limits:
-          cpus: "4"
-          memory: 64M
-        reservations:
-          cpus: "2"
-          memory: 32M
+    restart: unless-stopped

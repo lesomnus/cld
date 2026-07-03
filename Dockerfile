@@ -43,11 +43,15 @@ COPY --from=builder /dist/ /
 
 
 
-FROM scratch AS app
+FROM alpine:3.20 AS app
+
+# The daemon shells out to tmux and downloads claude over HTTPS, so the
+# runtime image needs tmux and CA certificates (a scratch image cannot run
+# `cld serve`).
+RUN apk add --no-cache tmux ca-certificates
 
 ARG TARGETARCH
-COPY "${TARGETARCH}" /cld
+COPY "${TARGETARCH}" /usr/local/bin/cld
 
-USER 65532:65532
-ENTRYPOINT ["/cld"]
+ENTRYPOINT ["cld"]
 CMD ["--help"]
