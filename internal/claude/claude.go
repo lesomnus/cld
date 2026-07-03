@@ -6,7 +6,9 @@ package claude
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
+	"unicode/utf16"
 )
 
 // ConfigDirIn is where CLAUDE_CONFIG_DIR points inside a container: a
@@ -26,23 +28,54 @@ func LegacyConfigDirIn(home string) string {
 	return home + "/.claude"
 }
 
-// EncodeProjectPath encodes a workspace path the way Claude Code names
-// transcript directories under projects/: every non-alphanumeric CHARACTER
-// becomes "-" (one dash per rune, so multibyte paths encode the same as
-// Claude Code's own encoding). The encoding is lossy on purpose; it only
-// needs to match.
+// maxEncodedLen mirrors Claude Code's length threshold: an encoded path longer
+// than this is truncated and disambiguated with a hash of the original path.
+const maxEncodedLen = 200
+
+// EncodeProjectPath encodes a workspace path the way Claude Code names its
+// transcript directory under projects/, so cld reads and writes the very
+// directory Claude Code does. It mirrors Claude Code's own function: replace
+// every UTF-16 code unit that is not [A-Za-z0-9] with "-" (so an astral rune,
+// two code units, becomes two dashes — matching JS String.replace), and, when
+// the result exceeds maxEncodedLen, truncate it and append "-" plus a base-36
+// hash of the original path.
+//
+// Matching Claude Code's private encoding is inherently brittle across its
+// versions, so nothing that keeps a session alive may depend on this being
+// exactly right: the launcher resumes with a fallback to a fresh session
+// (see ensure_session). This only needs to be close enough that backups land
+// where Claude Code looks for them.
 func EncodeProjectPath(p string) string {
+	units := utf16.Encode([]rune(p))
 	var b strings.Builder
-	b.Grow(len(p))
-	for _, r := range p {
-		is_alnum := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9'
-		if is_alnum {
-			b.WriteRune(r)
+	b.Grow(len(units))
+	for _, u := range units {
+		if u >= 'a' && u <= 'z' || u >= 'A' && u <= 'Z' || u >= '0' && u <= '9' {
+			b.WriteByte(byte(u))
 		} else {
 			b.WriteByte('-')
 		}
 	}
-	return b.String()
+	enc := b.String()
+	if len(enc) <= maxEncodedLen {
+		return enc
+	}
+	return enc[:maxEncodedLen] + "-" + projectPathHash(units)
+}
+
+// projectPathHash mirrors Claude Code's disambiguating hash: a 32-bit rolling
+// hash over the path's UTF-16 code units (t = t*31 + unit, wrapped to int32,
+// i.e. JS `(t<<5)-t+charCodeAt|0`), rendered as base-36 of its absolute value.
+func projectPathHash(units []uint16) string {
+	var h int32
+	for _, u := range units {
+		h = h<<5 - h + int32(u)
+	}
+	v := int64(h)
+	if v < 0 {
+		v = -v
+	}
+	return strconv.FormatInt(v, 36)
 }
 
 // SeedState merges the onboarding and per-project trust keys into an existing

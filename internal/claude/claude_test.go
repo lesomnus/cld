@@ -2,6 +2,7 @@ package claude_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/lesomnus/cld/internal/claude"
@@ -15,9 +16,18 @@ func TestEncodeProjectPath(t *testing.T) {
 	t.Run("every non-alphanumeric character", func(t *testing.T) {
 		require.Equal(t, "-home-a-b-c-1", claude.EncodeProjectPath("/home/a_b.c 1"))
 	})
-	t.Run("one dash per multibyte character, not per byte", func(t *testing.T) {
-		// A 3-byte Hangul syllable must encode to a single dash.
+	t.Run("one dash per UTF-16 code unit, matching Claude Code", func(t *testing.T) {
+		// A BMP Hangul syllable is one UTF-16 unit -> one dash.
 		require.Equal(t, "-workspaces--", claude.EncodeProjectPath("/workspaces/가"))
+		// An astral rune (emoji) is a surrogate pair, two UTF-16 units, so
+		// Claude Code's JS String.replace emits two dashes; cld must match.
+		require.Equal(t, "-workspaces---", claude.EncodeProjectPath("/workspaces/😀"))
+	})
+	t.Run("long paths are truncated and hashed like Claude Code", func(t *testing.T) {
+		// Ground truth from Claude Code's own WS()/hash on this input.
+		in := "/" + strings.Repeat("a", 250)
+		want := "-" + strings.Repeat("a", 199) + "-feo44x"
+		require.Equal(t, want, claude.EncodeProjectPath(in))
 	})
 }
 

@@ -519,10 +519,7 @@ func (d *Daemon) ensure_session(ctx context.Context, e *entry, id string) error 
 	}
 	has_history := code == 0
 
-	remote := []string{"claude"}
-	if has_history {
-		remote = append(remote, "--continue")
-	}
+	remote := session_command(has_history)
 
 	argv := []string{
 		d.self, "x", "exec",
@@ -553,6 +550,23 @@ func (d *Daemon) ensure_session(ctx context.Context, e *entry, id string) error 
 	d.sessions.set(id, sessionState{Gen: e.started_at, Ended: false})
 	d.log.Info("session created", slog.String("name", name))
 	return nil
+}
+
+// session_command is the argv run inside the container's tmux pane. With prior
+// history it resumes the conversation, but ALWAYS with a fresh-session
+// fallback: `claude --continue` exits immediately with "no conversation found
+// to continue" whenever Claude Code has nothing it can resume — an empty or
+// incompatible transcript, or a projects/ directory a newer Claude Code encodes
+// differently than cld does. A bare `claude --continue` would then leave a dead
+// pane that `cld it --new` only ever recreates into the same instant exit, so
+// the `|| exec claude` keeps the session alive regardless. cld therefore never
+// depends on correctly predicting Claude Code's resume behaviour to keep a
+// session up.
+func session_command(has_history bool) []string {
+	if has_history {
+		return []string{"sh", "-c", "claude --continue || exec claude"}
+	}
+	return []string{"claude"}
 }
 
 // session_env is the environment injected into every claude session. The
