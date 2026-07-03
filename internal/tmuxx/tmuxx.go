@@ -47,6 +47,27 @@ func (s *Server) NewSession(ctx context.Context, name string, command string) er
 	if out, err := s.run(ctx, "set-window-option", "-t", name, "remain-on-exit", "on"); err != nil {
 		return fmt.Errorf("tmux set remain-on-exit: %w: %s", err, out)
 	}
+	return s.tune(ctx)
+}
+
+// tune sets server/global options that make the claude TUI render well:
+// synchronized output so redraws reach the outer terminal as atomic frames
+// (no tearing over SSH), and mouse reporting for fullscreen-mode scrolling.
+// This server is dedicated to claude panes, so setting them globally is safe.
+func (s *Server) tune(ctx context.Context) error {
+	if out, err := s.run(ctx, "set-option", "-g", "mouse", "on"); err != nil {
+		return fmt.Errorf("tmux set mouse: %w: %s", err, out)
+	}
+
+	// Append the "sync" (DECSET 2026) feature once; appending on every session
+	// would pile up duplicate list entries.
+	features, err := s.run(ctx, "show-options", "-sv", "terminal-features")
+	if err == nil && strings.Contains(features, "sync") {
+		return nil
+	}
+	if out, err := s.run(ctx, "set-option", "-sa", "terminal-features", ",xterm*:sync"); err != nil {
+		return fmt.Errorf("tmux set terminal-features: %w: %s", err, out)
+	}
 	return nil
 }
 

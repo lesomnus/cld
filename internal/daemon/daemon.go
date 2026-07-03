@@ -102,6 +102,7 @@ type Daemon struct {
 	log  *slog.Logger
 
 	self     string // path of the cld executable, reused as pane client and watcher
+	self_ctr string // container ID when the daemon itself runs in one, else ""
 	sessions *sessionStore
 
 	base_ctx context.Context // long-lived; parents watcher/sync goroutines
@@ -145,6 +146,10 @@ func New(cfg *config.Config, cli *client.Client, log *slog.Logger) (*Daemon, err
 
 func (d *Daemon) Run(ctx context.Context) error {
 	d.base_ctx = ctx
+	d.self_ctr = detect_self_container(ctx, d.cli)
+	if d.self_ctr != "" {
+		d.log.Info("running inside a container", slog.String("id", short(d.self_ctr)))
+	}
 
 	if err := os.MkdirAll(d.cfg.CacheDir, 0o755); err != nil {
 		return err

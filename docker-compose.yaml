@@ -3,18 +3,21 @@ services:
     image: ghcr.io/lesomnus/cld:${REVISION:-edge}
     command: [serve]
 
-    # cld provisions and execs into other containers through the Docker API,
-    # so it needs the daemon socket and enough privilege to do so.
-    privileged: true
+    # The image entrypoint fixes ownership of the mounted dirs and joins the
+    # Docker socket's group for you, then runs cld as PUID:PGID — so the sockets
+    # under ~/.cache/cld end up owned by your host user with no pre-created dirs
+    # and no docker-gid to look up. Set these to your ids (default 1000):
+    #   CLD_UID=$(id -u) CLD_GID=$(id -g) docker compose up -d
     environment:
       - DOCKER_HOST=unix:///var/run/docker.sock
+      - XDG_CACHE_HOME=/data/cache
+      - XDG_DATA_HOME=/data/share
+      - PUID=${CLD_UID:-1000}
+      - PGID=${CLD_GID:-1000}
 
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      # Share the runtime dir so `cld ls` / `cld it` reach the daemon, and
-      # keep the binary cache across restarts.
-      - ${HOME}/.cache/cld:/root/.cache/cld
-      # Persist conversation backups.
-      - ${HOME}/.local/share/cld:/root/.local/share/cld
+      - ${HOME}/.cache/cld:/data/cache/cld
+      - ${HOME}/.local/share/cld:/data/share/cld
 
     restart: unless-stopped

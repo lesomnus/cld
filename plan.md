@@ -129,8 +129,12 @@ compose에서 워크스페이스 컨테이너만 나오는 건 라벨 필터로 
 
 ## it 명령어
 
-`cld it <이름>` = `tmux -S ~/.cache/cld/tmux.sock attach -t cld-<이름>` 을 `syscall.Exec`으로 실행. 데몬 불필요, docker 권한도 불필요.
+`cld it <이름>`은 데몬의 `GET /info`로 **tmux 서버가 어디 있는지** 물어본 뒤 attach 경로를 고른다:
 
+- 데몬이 **호스트**에서 돌면: `tmux -S ~/.cache/cld/tmux.sock attach -t cld-<이름>` 을 `syscall.Exec` (로컬 tmux 클라이언트 필요, docker 권한 불필요).
+- 데몬이 **컨테이너**에서 돌면(compose): cld 자신의 exec-attach 클라이언트(termx)로 데몬 컨테이너 안의 tmux에 `docker exec` attach — **호스트에 tmux가 전혀 필요 없다**. 데몬 uid로 exec(tmux는 다른 uid 클라이언트를 거부), TERM 전달. 데몬은 `/.dockerenv` + hostname(=짧은 컨테이너 ID) 검증으로 자기 위치를 감지하고(`CLD_SELF_CONTAINER`로 재정의 가능), 감지 실패 시 로컬 attach로 degrade.
+- 데몬이 죽어 있으면 로컬 attach 폴백(세션이 살아 있으면 여전히 붙을 수 있음).
+- TTY는 여전히 cld API 소켓으로 흐르지 않는다 — 컨테이너 경로의 TTY는 docker exec hijack이 나른다.
 - 세션이 없으면 상태에 따라 힌트 출력: 컨테이너가 안 돌고 있으면 그 사실을, 사용자가 종료한 세션이면 재생성 방법을 안내.
 - `cld it --new <이름>`: 데몬에 세션 재생성 요청 후 attach.
 

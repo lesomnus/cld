@@ -9,8 +9,22 @@ import (
 	"net"
 	"net/http"
 	urlpkg "net/url"
+	"os"
 	"time"
 )
+
+// Info tells clients where the daemon — and so the tmux server — lives, so
+// `cld it` can attach through a `docker exec` when the daemon is in a
+// container instead of requiring a local tmux.
+type Info struct {
+	// ContainerID is set when the daemon runs inside a container.
+	ContainerID string `json:"container_id,omitempty"`
+	// TmuxSocket is the tmux server socket path as seen by the daemon.
+	TmuxSocket string `json:"tmux_socket"`
+	// UID the daemon runs as; the attach exec must match it for tmux to
+	// accept the client.
+	UID int `json:"uid"`
+}
 
 // api serves the control plane: listing and session-exit notifications.
 // No TTY ever flows through this socket.
@@ -20,6 +34,15 @@ func (d *Daemon) api() http.Handler {
 	mux.HandleFunc("GET /items", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"items": d.Items()})
+	})
+
+	mux.HandleFunc("GET /info", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(Info{
+			ContainerID: d.self_ctr,
+			TmuxSocket:  d.cfg.TmuxSocketPath(),
+			UID:         os.Getuid(),
+		})
 	})
 
 	mux.HandleFunc("POST /notify/exited", func(w http.ResponseWriter, r *http.Request) {
@@ -145,6 +168,30 @@ func FetchItems(ctx context.Context, socket string) ([]Item, error) {
 		return nil, err
 	}
 	return body.Items, nil
+}
+
+// FetchInfo asks a running daemon where it (and its tmux server) lives.
+func FetchInfo(ctx context.Context, socket string) (*Info, error) {
+	hc := NewSocketClient(socket)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://cld/info", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	res, err := hc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("is `cld serve` running? %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("daemon: %s", res.Status)
+	}
+
+	var info Info
+	if err := json.NewDecoder(res.Body).Decode(&info); err != nil {
+		return nil, err
+	}
+	return &info, nil
 }
 
 // NotifyExited tells the daemon a session's remote process ended. gen is the
