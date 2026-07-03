@@ -483,6 +483,21 @@ func TestSessionLifecycle(t *testing.T) {
 		require.Contains(t, out, name)
 	})
 
+	t.Run("seeds a vscode terminal profile into the container", func(t *testing.T) {
+		var out string
+		wait_for(t, 15*time.Second, "vscode profile seeded", func() bool {
+			o, code, err := dockerx.ExecOutput(t.Context(), cli, ctr, "0",
+				[]string{"cat", "/root/.vscode-server/data/Machine/settings.json"})
+			if err != nil || code != 0 {
+				return false
+			}
+			out = o
+			return strings.Contains(o, `"claude"`)
+		})
+		require.Contains(t, out, "terminal.integrated.profiles.linux")
+		require.Contains(t, out, `"cld"`)
+	})
+
 	t.Run("a non-zero session exit is surfaced as failed", func(t *testing.T) {
 		require.NoError(t, NotifyExited(context.Background(), cfg.SocketPath(), id, "", 1))
 		wait_for(t, 10*time.Second, "failed", func() bool {

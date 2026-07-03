@@ -111,9 +111,17 @@ each project a distinct name — two projects sharing a name share a
 conversation history.
 
 **Git inside a session** works like VS Code Dev Containers: your `~/.gitconfig`
-is copied in, and your host ssh-agent is relayed (`SSH_AUTH_SOCK`), so signed
-commits and SSH pushes just work — the agent is available while you're
-attached. Turn it off with `auth.forward_agent: false`.
+is copied in and your host ssh-agent is relayed (`SSH_AUTH_SOCK`), so signed
+commits and SSH pushes just work while you're attached. Prefer SSH remotes: a
+host-only `credential.helper` (e.g. `gopass`, `osxkeychain`) is *not* forwarded
+— it wouldn't exist in the container — so HTTPS auth falls back to whatever the
+container itself provides. Turn the agent off with `auth.forward_agent: false`.
+
+**From inside the container**, `cld it` works too — in a VS Code/Cursor terminal,
+`docker exec`, etc. With no name it attaches to that container's own session, and
+cld pre-installs a **claude** terminal profile so you can open it straight from
+the terminal `+` dropdown. (Needs the daemon running in a container; on by
+default, disable with `auth.remote_control: false`.)
 
 ## Configuration
 

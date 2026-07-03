@@ -135,6 +135,12 @@ func (d *Daemon) ensure_(ctx context.Context, e *entry) error {
 		return fmt.Errorf("prepare state: %w", err)
 	}
 
+	// Best-effort: give VS Code / Cursor a "claude" terminal profile that runs
+	// `cld it`. Needs the in-container cld binary (arch match).
+	if e.arch_ok {
+		d.install_vscode_profile(ctx, e, id)
+	}
+
 	if !e.session_done {
 		// Suppress recreation of a session the user ended in this generation,
 		// even across a daemon restart (the record is on disk).

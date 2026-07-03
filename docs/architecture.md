@@ -206,6 +206,35 @@ GET /info, then:
 daemon's container id through the local docker client: on the host that
 succeeds; inside a managed container it does not, which routes to API attach.
 
+### VS Code terminal profile
+
+A bare `cld it` inside a container attaches to that container's own session, so
+it works as a VS Code integrated-terminal profile: pick **claude** from the
+terminal `+` dropdown to drop straight into the session.
+
+cld seeds this profile automatically into the container's editor machine
+settings during provisioning (`~/.vscode-server` and `~/.cursor-server`,
+`data/Machine/settings.json`), best-effort — an unused editor just gets an
+unused settings file. For any other editor, or to control it yourself, add it to
+your `devcontainer.json`:
+
+```jsonc
+"customizations": {
+  "vscode": {
+    "settings": {
+      "terminal.integrated.profiles.linux": {
+        "claude": { "path": "cld", "args": ["it"] }
+      }
+      // make it the default terminal (optional):
+      // "terminal.integrated.defaultProfile.linux": "claude"
+    }
+  }
+}
+```
+
+The profile relies on the API relay, so it attaches when in-container `cld it`
+can — i.e. with a containerized daemon.
+
 ### Constraints & security
 
 - **Self-scoped, no lateral movement.** The relayed API is `scoped_api(id)`, not
@@ -239,5 +268,9 @@ succeeds; inside a managed container it does not, which routes to API attach.
   oversized, bad type, non-blocking resize).
 - `internal/daemon/scoped_api_test.go` — the scoping: a container reaches only
   its own session and is refused any other name/container.
+- `internal/daemon/gitconfig_test.go` — the host `credential.helper` is stripped
+  from the forwarded gitconfig, identity kept.
+- `internal/daemon/vscode_test.go` — the terminal-profile merge preserves other
+  settings/profiles and is idempotent.
 - `internal/daemon/integration_test.go` — an in-container `cld ls` reaches the
   daemon through the relay and lists the container.

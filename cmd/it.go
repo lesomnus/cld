@@ -29,11 +29,22 @@ func NewCmdIt() *xli.Command {
 			&flg.Switch{Name: "new", Brief: "recreate the session if the user had ended it"},
 		},
 		Args: arg.Args{
-			&arg.String{Name: "name", Brief: "devcontainer name as shown by `cld ls`"},
+			&arg.String{Name: "name", Brief: "devcontainer name (`cld ls`); default: the only one / this container's own", Optional: true},
 		},
 		Handler: xli.OnRun(func(ctx context.Context, cmd *xli.Command, next xli.Next) error {
 			c := use_config.Must(ctx)
-			name := arg.MustGet[string](cmd, "name")
+			name, _ := arg.Get[string](cmd, "name")
+			if name == "" {
+				// No name: attach to the sole devcontainer. Inside a managed
+				// container the relayed listing is scoped to that one container,
+				// so a bare `cld it` there means "attach to my own session" —
+				// which is what a VS Code terminal profile runs.
+				resolved, err := sole_devcontainer(ctx, c.SocketPath())
+				if err != nil {
+					return err
+				}
+				name = resolved
+			}
 			session := devc.SessionName(name)
 
 			if v, _ := flg.Get[bool](cmd, "new"); v {
@@ -64,6 +75,31 @@ func NewCmdIt() *xli.Command {
 			}
 			return attach_local(ctx, c.TmuxSocketPath(), session, name, c.SocketPath())
 		}),
+	}
+}
+
+// sole_devcontainer returns the name of the one devcontainer the daemon serves,
+// for a bare `cld it`. Inside a managed container the relayed listing is scoped
+// to that container, so this resolves to the caller's own session; on a host it
+// works when there is exactly one.
+func sole_devcontainer(ctx context.Context, socket string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	items, err := daemon.FetchItems(ctx, socket)
+	if err != nil {
+		return "", err
+	}
+	switch len(items) {
+	case 0:
+		return "", fmt.Errorf("no devcontainer found; run `cld up` or see `cld ls`")
+	case 1:
+		return items[0].Name, nil
+	default:
+		names := make([]string, len(items))
+		for i, it := range items {
+			names[i] = it.Name
+		}
+		return "", fmt.Errorf("multiple devcontainers; name one: %s", strings.Join(names, ", "))
 	}
 }
 
