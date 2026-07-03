@@ -37,8 +37,8 @@ Then bring the daemon up and attach:
 ```sh
 # Run the daemon as a container on your Docker. It mounts the Docker socket and
 # your ~/.cache/cld + ~/.local/share/cld, and runs as your user so the sockets
-# it creates are yours (which is what lets the host `cld` reach it). Idempotent;
-# `--recreate` replaces it, `cld uninstall` removes it.
+# it creates are yours (which is what lets the host `cld` reach it). Re-run with
+# `--recreate` to replace it (e.g. to upgrade); `cld uninstall` removes it.
 $ cld install
 
 # The daemon watches Docker events and provisions every devcontainer it sees
