@@ -118,10 +118,12 @@ That generic relay is exactly what the remote-control feature reuses.
 
 ### Problem
 
-The daemon's control API (`cld.sock`) and tmux server live on the daemon side.
-From inside a managed devcontainer none of that is reachable: `~/.cache/cld` is
-absent, and the container's docker (if any) is a different engine. So `cld it`,
-`cld ls`, etc. run *inside* the container had no way to talk to the daemon.
+The daemon's control API (`cld.sock`) and tmux server live on the daemon side
+and are never mounted into a managed container. So `cld it`, `cld ls`, etc. run
+*inside* a container have nothing to reach: `~/.cache/cld` is absent, and a
+devcontainer normally has no route back to the daemon at all. The daemon only
+ever reaches *into* containers over `docker exec`; nothing lets a container
+reach back out.
 
 Relaying the tmux socket instead does **not** work: tmux's client/server
 protocol passes file descriptors over the socket (`SCM_RIGHTS`), which a byte
