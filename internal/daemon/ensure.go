@@ -78,12 +78,17 @@ func (d *Daemon) ensure_(ctx context.Context, e *entry) error {
 	if c.State.StartedAt != e.started_at {
 		e.started_at = c.State.StartedAt
 		e.session_done = false
+		e.session_failed = false
 	}
 
 	// A container that already reached ready and has its session should not
 	// pay the full provisioning cost on every reconcile; a user-ended
-	// session must keep its status too.
-	settled := e.item.Status == StatusReady || e.item.Status == StatusSessionEnded
+	// session must keep its status too, and a session that exited non-zero
+	// must stay visible as failed instead of being silently flipped back to
+	// ready on the next reconcile (it is retried by `cld it --new` or a
+	// container restart).
+	settled := e.item.Status == StatusReady || e.item.Status == StatusSessionEnded ||
+		(e.item.Status == StatusFailed && e.session_failed)
 	if settled && e.cfg_dir != "" && e.session_done && e.watch_stop != nil {
 		return nil
 	}
@@ -548,6 +553,7 @@ func (d *Daemon) ensure_session(ctx context.Context, e *entry, id string) error 
 	}
 	// Record that a live session now exists for this generation.
 	d.sessions.set(id, sessionState{Gen: e.started_at, Ended: false})
+	e.session_failed = false
 	d.log.Info("session created", slog.String("name", name))
 	return nil
 }
@@ -608,8 +614,11 @@ func (d *Daemon) recreate_session(ctx context.Context, e *entry) error {
 		return err
 	}
 	e.session_done = true
-	if e.item.Status == StatusSessionEnded {
+	// A fresh live session exists again, so clear a prior ended/failed status
+	// (ensure_session already cleared session_failed) and its error.
+	if e.item.Status == StatusSessionEnded || e.item.Status == StatusFailed {
 		e.item.Status = StatusReady
+		e.item.Error = ""
 	}
 	e.publish()
 	return nil

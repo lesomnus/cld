@@ -10,6 +10,7 @@ import (
 	"net/http"
 	urlpkg "net/url"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -53,6 +54,7 @@ func (d *Daemon) api() http.Handler {
 		}
 
 		gen := r.URL.Query().Get("gen")
+		code, _ := strconv.Atoi(r.URL.Query().Get("code"))
 
 		// Look up only; a stale notify for an unknown container must not
 		// create a phantom entry in the listing.
@@ -73,10 +75,25 @@ func (d *Daemon) api() http.Handler {
 			if e.item.Workspace != "" {
 				d.copy_out(d.base_ctx, e, dirty{global: true, project: true})
 			}
-			// Persist that the user ended this generation's session so a
+			if code != 0 {
+				// A non-zero exit is a crash or a failed launch, not the user
+				// quitting: surface it as failed instead of masking it as a
+				// clean end. session_failed keeps it settled so a reconcile does
+				// not silently flip it back to ready; `cld it --new` retries.
+				e.session_failed = true
+				e.item.Status = StatusFailed
+				e.item.Error = fmt.Sprintf("session exited with status %d", code)
+				e.publish()
+				d.log.Warn("session failed",
+					slog.String("name", e.item.Name), slog.Int("code", code))
+				return
+			}
+			// A clean exit is the user ending the session. Persist it so a
 			// daemon restart does not resurrect it.
+			e.session_failed = false
 			d.sessions.set(id, sessionState{Gen: e.started_at, Ended: true})
 			e.item.Status = StatusSessionEnded
+			e.item.Error = ""
 			e.publish()
 			d.log.Info("session exited", slog.String("name", e.item.Name))
 		})
@@ -223,11 +240,12 @@ func FetchInfo(ctx context.Context, socket string) (*Info, error) {
 
 // NotifyExited tells the daemon a session's remote process ended. gen is the
 // generation the session was launched for, so the daemon can ignore a stale
-// notify from a previous container generation.
-func NotifyExited(ctx context.Context, socket string, container string, gen string) error {
+// notify from a previous container generation. code is the process exit status:
+// 0 means the user ended the session, non-zero means it failed.
+func NotifyExited(ctx context.Context, socket string, container string, gen string, code int) error {
 	hc := NewSocketClient(socket)
 	url := "http://cld/notify/exited?container=" + urlpkg.QueryEscape(container) +
-		"&gen=" + urlpkg.QueryEscape(gen)
+		"&gen=" + urlpkg.QueryEscape(gen) + "&code=" + strconv.Itoa(code)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
 		return err

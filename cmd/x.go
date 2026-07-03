@@ -98,10 +98,18 @@ func new_cmd_x_exec() *xli.Command {
 
 			code, err := termx.Run(ctx, cli, o)
 
+			// Report the real exit status so the daemon can tell a clean quit
+			// (0, the user ending the session) from a crash or a failed exec.
+			// termx.Run yields code 0 with a non-nil err when the exec never
+			// started; report that as non-zero so it is not mistaken for a quit.
+			status := code
+			if err != nil && status == 0 {
+				status = 1
+			}
 			if socket, ok := flg.Find[string](cmd, "notify"); ok {
 				gen, _ := flg.Get[string](cmd, "session-gen")
 				nctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-				daemon.NotifyExited(nctx, socket, ctr, gen)
+				daemon.NotifyExited(nctx, socket, ctr, gen, status)
 				cancel()
 			}
 

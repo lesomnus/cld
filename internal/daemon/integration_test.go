@@ -458,13 +458,30 @@ func TestSessionLifecycle(t *testing.T) {
 
 	endSession := func(t *testing.T) {
 		t.Helper()
-		// Empty gen means "current generation" and is always accepted.
-		require.NoError(t, NotifyExited(context.Background(), cfg.SocketPath(), id, ""))
+		// Empty gen means "current generation" and is always accepted; code 0
+		// is a clean quit (the user ending the session).
+		require.NoError(t, NotifyExited(context.Background(), cfg.SocketPath(), id, "", 0))
 		wait_for(t, 10*time.Second, "session-ended", func() bool {
 			it := find_item(must_items(t, cfg), name)
 			return it != nil && it.Status == StatusSessionEnded
 		})
 	}
+
+	t.Run("a non-zero session exit is surfaced as failed", func(t *testing.T) {
+		require.NoError(t, NotifyExited(context.Background(), cfg.SocketPath(), id, "", 1))
+		wait_for(t, 10*time.Second, "failed", func() bool {
+			it := find_item(must_items(t, cfg), name)
+			return it != nil && it.Status == StatusFailed
+		})
+		require.Contains(t, find_item(must_items(t, cfg), name).Error, "status 1")
+
+		// `cld it --new` recovers a failed session back to a live one.
+		require.NoError(t, RecreateSession(context.Background(), cfg.SocketPath(), name))
+		wait_for(t, 10*time.Second, "ready again", func() bool {
+			it := find_item(must_items(t, cfg), name)
+			return it != nil && it.Status == StatusReady
+		})
+	})
 
 	t.Run("ending the session marks it session-ended", endSession)
 
