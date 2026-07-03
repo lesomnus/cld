@@ -43,6 +43,22 @@ COPY --from=builder /dist/ /
 
 
 
+# `cld up` fallback: the official devcontainer CLI is npm-only (no static
+# binary, no official image), so this image packages it with the docker CLI
+# it shells out to. Users who have neither node nor the CLI on the host get
+# `devcontainer up` by pulling this image.
+FROM node:22-alpine AS runner
+
+ARG DEVCONTAINERS_CLI_VERSION="latest"
+RUN apk add --no-cache docker-cli docker-cli-buildx docker-cli-compose git \
+	&& npm install -g "@devcontainers/cli@${DEVCONTAINERS_CLI_VERSION}" \
+	&& npm cache clean --force
+
+ENTRYPOINT ["devcontainer"]
+CMD ["--help"]
+
+
+
 FROM alpine:3.20 AS app
 
 # The daemon shells out to tmux and downloads claude over HTTPS, so the runtime

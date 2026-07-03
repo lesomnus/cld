@@ -23,6 +23,7 @@ func NewCmdRoot() *xli.Command {
 			NewCmdVersion(),
 			NewCmdConfig(),
 			NewCmdServe(),
+			NewCmdUp(),
 			NewCmdLs(),
 			NewCmdIt(),
 			NewCmdX(),

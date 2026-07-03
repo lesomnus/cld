@@ -206,12 +206,12 @@ func (d *Daemon) teardown(ctx context.Context, e *entry) {
 // resolve figures out the effective user, its home, the config dir, the
 // workspace path, the platform, and whether the config dir is bind-mounted.
 func (d *Daemon) resolve(ctx context.Context, e *entry, id string, labels map[string]string, c *container_inspect) error {
+	// Prefer the devcontainer's remoteUser, then the image's own USER, and
+	// otherwise the container's default user (empty = whatever `docker exec`
+	// runs as) rather than guessing a uid that may not exist in the image.
 	user := devc.RemoteUser(labels[devc.LabelMetadata])
 	if user == "" && c.Config != nil {
 		user = c.Config.User
-	}
-	if user == "" {
-		user = "1000"
 	}
 
 	// One probe yields uid, gid, home, and libc, each on its own line, as the
@@ -230,12 +230,17 @@ func (d *Daemon) resolve(ctx context.Context, e *entry, id string, labels map[st
 	if len(lines) != 4 {
 		return fmt.Errorf("probe user %q: unexpected output %q", user, out)
 	}
-	e.user = user
 	e.uid, _ = strconv.Atoi(strings.TrimSpace(lines[0]))
 	e.gid, _ = strconv.Atoi(strings.TrimSpace(lines[1]))
 	e.home = lines[2]
 	if e.home == "" || e.home == "/" {
 		return fmt.Errorf("user %q has no usable home", user)
+	}
+	// Pin the resolved uid so every later exec targets the same user even when
+	// the default user was used (empty string) at probe time.
+	e.user = user
+	if e.user == "" {
+		e.user = strings.TrimSpace(lines[0])
 	}
 	e.cfg_dir = path.Join(e.home, claude.ConfigDirName)
 	musl := lines[3] == "musl"

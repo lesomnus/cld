@@ -58,8 +58,11 @@ jobs:
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         with:
           source: .
-          targets: app
+          targets: app,runner
           set: |
             app.platform=linux/amd64
             app.platform=linux/arm64
             app.output=type=registry
+            runner.platform=linux/amd64
+            runner.platform=linux/arm64
+            runner.output=type=registry

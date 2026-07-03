@@ -35,6 +35,19 @@ target "build" {
     dest = "dist"
   }]
 }
+target "runner" {
+  target = "runner"
+  labels = {
+    "org.opencontainers.image.title"    = "cld-runner",
+    "org.opencontainers.image.url"      = "https://github.com/lesomnus/cld",
+    "org.opencontainers.image.revision" = "${BUILD_HASH}",
+    "org.opencontainers.image.version"  = "${APP_VERSION}",
+  }
+  tags = [
+    "${REPO}:runner",
+    "${REPO}:runner-${BUILD_DATE}-${BUILD_ID}",
+  ]
+}
 target "app" {
   target = "app"
   context = "./dist"

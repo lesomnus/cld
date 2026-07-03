@@ -30,6 +30,19 @@ docker event를 listen해서 devcontainer가 뜨면, 호스트에 캐시해둔 c
 - **컨테이너 내부 워크스페이스 경로**: 라벨에는 없다. `docker inspect`의 `.Mounts`에서 `Source == devcontainer.local_folder` 인 항목의 `Destination`을 쓰고, `devcontainer.config_file`의 devcontainer.json에 `workspaceFolder`가 명시돼 있으면 그걸 우선한다.
 - **실행 유저**: `devcontainer.metadata` 라벨(이미지에서 상속)의 `remoteUser` → 없으면 `.Config.User` → 없으면 uid 1000. 이 유저로 exec 해야 파일 소유권·$HOME·claude 설정 위치가 맞는다.
 
+## up 명령어
+
+`cld up [경로]`는 devcontainer를 만들고/켜고, 데몬이 프로비저닝을 마치면 attach까지 한다.
+
+- **devcontainer 생성은 공식 devcontainer CLI를 감싼다** — 스펙(features·이미지 빌드·lifecycle·변수 치환) 재구현은 devpod급이라 안 함. 감지가 공식 CLI 라벨에 의존하므로 재구현은 어긋날 위험만 큼.
+- **러너 선택 캐스케이드**: 호스트 PATH의 `devcontainer` → `npx @devcontainers/cli`(npm에서 최초 1회 다운로드) → 컨테이너화된 CLI(`cld.yaml`의 `up.image`, 기본 `ghcr.io/lesomnus/cld:runner`). CLI가 npm 전용(정적 바이너리·공식 이미지 없음)이라 러너 이미지를 우리가 배포(node + @devcontainers/cli + docker CLI).
+- **컨테이너 러너 실행**: 워크스페이스를 **호스트와 동일 경로**로 마운트(CLI가 라벨에 기록하는 경로가 호스트와 일치해야 데몬 감지가 맞음), 소켓 bind, `HOME` 전달(`${localEnv:HOME}` 치환용). 이미지 pull 실패는 스트림의 에러를 surface. 출력 스트리밍, 종료코드 전파.
+  - **원격 엔진 거부**: `DOCKER_HOST`가 tcp면 러너 컨테이너가 로컬 워크스페이스를 못 보므로(bind가 원격 호스트에서 빈 디렉터리로 생성됨), 컨테이너 러너를 조용히 쓰지 않고 "로컬 엔진(unix 소켓)이 필요하다, CLI/Node를 호스트에 설치하라"고 명확히 실패. 로컬 unix 소켓일 때만 컨테이너 러너 사용.
+- up 이후 데몬 `/items`를 폴링해 그 `local_folder`가 ready가 되면 `it`의 attach 경로 재사용.
+  - 세션이 `session-ended`면(사용자가 이전에 종료) attach 전에 `RecreateSession` — `up`은 "띄우고 들어가기"라 재생성이 맞음.
+  - **데몬 유무는 소켓 파일 존재로 판정**(FetchItems 에러가 아니라): 소켓이 없으면 "devcontainer는 떴다"까지만 안내(에러 아님), 소켓이 있는데 일시적 에러면 폴링을 계속(데몬 기동 직후 순간 에러에 오판하지 않음). provisioning `failed`만 치명.
+- `--no-attach`로 프로비저닝만. `-- <추가인자>`는 `devcontainer up`에 통과.
+
 ## 특정 devcontainer 무시 (opt-out)
 
 두 가지 방법, 라벨이 우선:

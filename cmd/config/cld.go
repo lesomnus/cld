@@ -42,6 +42,12 @@ type AuthConfig struct {
 	OAuthTokenFile string `yaml:"oauth_token_file"`
 }
 
+type UpConfig struct {
+	// Image used to run the devcontainer CLI when neither `devcontainer` nor
+	// `npx` is available on the host.
+	Image string `yaml:"image"`
+}
+
 type ReleaseConfig struct {
 	// Base URL of the Claude Code release channel.
 	BaseURL string `yaml:"base_url"`
@@ -105,6 +111,10 @@ func (c *Config) evaluateCld() error {
 	}
 	if c.Sync.FallbackInterval == 0 {
 		c.Sync.FallbackInterval = Duration(time.Minute)
+	}
+
+	if c.Up.Image == "" {
+		c.Up.Image = "ghcr.io/lesomnus/cld:runner"
 	}
 
 	return nil

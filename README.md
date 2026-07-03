@@ -43,6 +43,20 @@ myapp 3f9c2a81b04d  ready   2.1.191
 $ cld it myapp
 ```
 
+Don't have a devcontainer running yet? `cld up [path]` creates/starts one and
+attaches when it's ready:
+
+```sh
+$ cld up ~/src/myapp          # or `cld up` in the project directory
+```
+
+It runs the official `devcontainer up` — using a `devcontainer` binary or
+`npx` on your host if present, otherwise a containerized copy of the CLI
+(`ghcr.io/lesomnus/cld:runner`, pulled on first use) so Docker is the only
+requirement. Extra flags pass through: `cld up . -- --remove-existing-container`.
+(The containerized runner needs a local engine; with a remote `DOCKER_HOST`,
+install the devcontainer CLI or Node on your host.)
+
 The host needs no tmux for this: `cld it` asks the daemon where its tmux server
 lives and, when the daemon runs in a container, attaches through a `docker
 exec` into it — the tmux bundled in the image is the only one involved. (With
