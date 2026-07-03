@@ -87,11 +87,48 @@ func (d *Daemon) install_gitconfig(ctx context.Context, e *entry, id string) err
 	if err != nil {
 		return nil
 	}
+	data = strip_credential_helpers(data)
 	if err := dockerx.WriteFile(ctx, d.cli, id, e.cfg_dir, GitConfigName, 0o644, e.uid, e.gid, data); err != nil {
 		return err
 	}
 	e.git_config = true
 	return nil
+}
+
+// strip_credential_helpers removes every `helper` entry under a [credential]
+// section from a gitconfig. The host's credential helper (gopass, osxkeychain,
+// manager, …) is a host-only binary that does not exist in the container, so
+// forwarding it would break HTTPS git auth with a confusing "not a git command"
+// error. In-container git uses the forwarded ssh-agent (an SSH remote) instead.
+func strip_credential_helpers(cfg []byte) []byte {
+	lines := strings.Split(string(cfg), "\n")
+	out := lines[:0]
+	in_credential := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") {
+			// Section name is up to the first space, '"', or ']'; it is
+			// case-insensitive in git.
+			name := trimmed[1:]
+			if i := strings.IndexAny(name, " \t\"]"); i >= 0 {
+				name = name[:i]
+			}
+			in_credential = strings.EqualFold(name, "credential")
+			out = append(out, line)
+			continue
+		}
+		if in_credential {
+			key := trimmed
+			if i := strings.IndexByte(key, '='); i >= 0 {
+				key = strings.TrimSpace(key[:i])
+			}
+			if strings.EqualFold(key, "helper") {
+				continue // drop the host-only helper
+			}
+		}
+		out = append(out, line)
+	}
+	return []byte(strings.Join(out, "\n"))
 }
 
 // relay_agent forwards the host ssh-agent into the container (SSH_AUTH_SOCK).
