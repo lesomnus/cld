@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s --max-time 10 \"https://mcr.microsoft.com/v2/devcontainers/cli/tags/list\")",
+      "Bash(curl -s --max-time 20 \"https://mcr.microsoft.com/v2/_catalog\")",
+      "Bash(python3 -c 'import sys,json *)",
+      "Read(//usr/local/bin/**)"
+    ]
+  }
+}

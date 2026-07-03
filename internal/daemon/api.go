@@ -111,6 +111,33 @@ func (d *Daemon) api() http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
+	// Stop and remove a devcontainer, addressed by display name. Backs
+	// `cld down`. The final backup and removal run on the container's worker
+	// so the copy-out finishes before Docker drops the container.
+	mux.HandleFunc("POST /down", func(w http.ResponseWriter, r *http.Request) {
+		name := r.URL.Query().Get("name")
+		if name == "" {
+			http.Error(w, "name required", http.StatusBadRequest)
+			return
+		}
+		e := d.by_name(name)
+		if e == nil {
+			http.Error(w, "no such devcontainer", http.StatusNotFound)
+			return
+		}
+
+		done := make(chan error, 1)
+		if !e.mbox.post(func() { done <- d.down(d.base_ctx, e) }) {
+			http.Error(w, "container is no longer tracked", http.StatusConflict)
+			return
+		}
+		if err := <-done; err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	return mux
 }
 
@@ -218,6 +245,31 @@ func NotifyExited(ctx context.Context, socket string, container string, gen stri
 func RecreateSession(ctx context.Context, socket string, name string) error {
 	hc := NewSocketClient(socket)
 	url := "http://cld/session/new?name=" + urlpkg.QueryEscape(name)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		return err
+	}
+
+	res, err := hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("is `cld serve` running? %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 512))
+		return fmt.Errorf("daemon: %s: %s", res.Status, string(body))
+	}
+	return nil
+}
+
+// Down asks the daemon to stop and remove a devcontainer. The daemon takes a
+// final backup first, so the conversation history survives the removal. It uses
+// a longer timeout than the other calls because that backup plus tearing down a
+// Compose project can take a while.
+func Down(ctx context.Context, socket string, name string) error {
+	hc := NewSocketClient(socket)
+	hc.Timeout = 2 * time.Minute
+	url := "http://cld/down?name=" + urlpkg.QueryEscape(name)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
 		return err

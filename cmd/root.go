@@ -24,6 +24,7 @@ func NewCmdRoot() *xli.Command {
 			NewCmdConfig(),
 			NewCmdServe(),
 			NewCmdUp(),
+			NewCmdDown(),
 			NewCmdLs(),
 			NewCmdIt(),
 			NewCmdAgent(),

@@ -57,6 +57,11 @@ requirement. Extra flags pass through: `cld up . -- --remove-existing-container`
 (The containerized runner needs a local engine; with a remote `DOCKER_HOST`,
 install the devcontainer CLI or Node on your host.)
 
+`cld down <name>` is the inverse: it takes a final backup, then stops and
+removes the devcontainer — for a Compose-based devcontainer the whole project
+(the dev service plus sidecars) is removed. Named volumes and the host-side
+conversation backup are kept, so `cld up` later restores the history.
+
 The host needs no tmux for this: `cld it` asks the daemon where its tmux server
 lives and, when the daemon runs in a container, attaches through a `docker
 exec` into it — the tmux bundled in the image is the only one involved. (With
@@ -83,6 +88,7 @@ brings you right back to it. Don't exit claude just to go do something else.
 | Scroll up through output            | mouse wheel, or `ctrl-b [` + arrows, `q` to exit   |
 | See what's running                  | `cld ls`                                           |
 | Recover after exiting claude        | `cld it --new <name>`                              |
+| Remove a devcontainer               | `cld down <name>` (keeps the conversation backup)  |
 
 Things that just work — nothing for you to do:
 
