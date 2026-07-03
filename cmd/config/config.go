@@ -30,6 +30,7 @@ type Config struct {
 	Release ReleaseConfig `yaml:"release"`
 	Sync    SyncConfig    `yaml:"sync"`
 	Up      UpConfig      `yaml:"up"`
+	Install InstallConfig `yaml:"install"`
 
 	Otel OtelConfig
 }

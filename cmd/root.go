@@ -22,6 +22,8 @@ func NewCmdRoot() *xli.Command {
 		Commands: []*xli.Command{
 			NewCmdVersion(),
 			NewCmdConfig(),
+			NewCmdInstall(),
+			NewCmdUninstall(),
 			NewCmdServe(),
 			NewCmdUp(),
 			NewCmdDown(),

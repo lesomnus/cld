@@ -74,6 +74,12 @@ type UpConfig struct {
 	Image string `yaml:"image"`
 }
 
+type InstallConfig struct {
+	// Image is the cld daemon image `cld install` runs as a container on the
+	// host's Docker engine.
+	Image string `yaml:"image"`
+}
+
 type ReleaseConfig struct {
 	// Base URL of the Claude Code release channel.
 	BaseURL string `yaml:"base_url"`
@@ -141,6 +147,9 @@ func (c *Config) evaluateCld() error {
 
 	if c.Up.Image == "" {
 		c.Up.Image = "ghcr.io/lesomnus/cld:runner"
+	}
+	if c.Install.Image == "" {
+		c.Install.Image = "ghcr.io/lesomnus/cld:edge"
 	}
 
 	return nil

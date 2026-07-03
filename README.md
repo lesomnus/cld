@@ -15,27 +15,28 @@ a file watcher) into each one. Inside a provisioned container you can just run
 
 ## Quick start
 
-The compose file runs the daemon from the published image (which also bundles
-the `cld` binary), so you don't build anything. Start it, then copy the binary
-out of the running container to drive it from your host — no Go, no build.
-
-The daemon runs as your user so the sockets it creates under `~/.cache/cld` are
-yours (not root), which is what lets the host `cld` reach it. The image
-entrypoint handles ownership and Docker-socket group access; you just pass your
-ids (they default to 1000):
+`cld` is one binary that both drives the daemon and runs as it. Get it — a
+release build, `go install github.com/lesomnus/cld@latest`, or copy it out of
+the image:
 
 ```sh
-# Start the daemon (pulls ghcr.io/lesomnus/cld:edge). It watches Docker events
-# and provisions every devcontainer it sees, except those labelled
-# cld.ignore=true or matched by an `ignore:` glob in cld.yaml.
-$ CLD_UID=$(id -u) CLD_GID=$(id -g) docker compose up -d
+$ docker create --name cld-tmp ghcr.io/lesomnus/cld:edge \
+    && docker cp cld-tmp:/cld ~/.local/bin/cld && docker rm cld-tmp
+```
 
-# Copy the cld binary out of the running container onto your host.
-$ docker compose cp cld:/cld ~/.local/bin/cld
+Then bring the daemon up and attach:
 
-# The compose file shares ~/.cache/cld, so the host binary talks to the running
-# daemon over the same socket. Now start any devcontainer (VS Code "Reopen in
-# Container", `devcontainer up`, a .devcontainer compose stack, …).
+```sh
+# Run the daemon as a container on your Docker. It mounts the Docker socket and
+# your ~/.cache/cld + ~/.local/share/cld, and runs as your user so the sockets
+# it creates are yours (which is what lets the host `cld` reach it). Idempotent;
+# `--recreate` replaces it, `cld uninstall` removes it.
+$ cld install
+
+# The daemon watches Docker events and provisions every devcontainer it sees
+# (except those labelled cld.ignore=true or matched by an `ignore:` glob in
+# cld.yaml). Start any devcontainer (VS Code "Reopen in Container",
+# `devcontainer up`, a .devcontainer compose stack, …), then:
 $ cld ls
 NAME  CONTAINER     STATUS  VERSION
 myapp 3f9c2a81b04d  ready   2.1.191
@@ -67,10 +68,20 @@ lives and, when the daemon runs in a container, attaches through a `docker
 exec` into it — the tmux bundled in the image is the only one involved. (With
 the daemon running directly on the host instead, `cld it` uses the host tmux.)
 
-Put `CLD_UID`/`CLD_GID` in a `.env` file next to the compose file so plain
-`docker compose up -d` picks them up. If you'd rather not run the host binary
-at all, drive the daemon in place instead: `docker compose exec cld cld ls`,
-`docker compose exec -it cld cld it myapp`.
+### Running the daemon another way
+
+`cld install` just runs `ghcr.io/lesomnus/cld:edge` with `serve` on your Docker.
+To run it yourself — for debugging, a custom setup, or without the `cld install`
+step — the repo's `docker-compose.yaml` is kept current as a reference:
+
+```sh
+$ CLD_UID=$(id -u) CLD_GID=$(id -g) docker compose up -d
+```
+
+You can also run the daemon directly on the host with `cld serve` (it needs
+Docker access; attaching from *inside* a devcontainer, though, requires the
+containerized daemon). Or drive an in-container daemon in place, no host binary
+needed: `docker compose exec cld cld ls`, `docker compose exec -it cld cld it myapp`.
 
 ## Day-to-day usage
 

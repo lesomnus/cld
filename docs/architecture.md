@@ -15,6 +15,7 @@ how the pieces fit together and how in-container access works.
 | `claude` | inside each devcontainer | the Claude Code process, installed by the daemon at `/usr/local/bin/claude` |
 | `cld x watch` / `cld x agent` / `cld x api` | inside each devcontainer | in-container helpers the daemon drives over `docker exec` (file watch, ssh-agent relay, API relay) |
 | `cld it` / `cld up` / `cld ls` / `cld down` | wherever you invoke them | control-plane clients that talk to the daemon over `<CacheDir>/cld.sock` |
+| `cld install` / `cld uninstall` | host | create/remove the daemon container on the host's Docker; `internal/installer` mirrors the reference `docker-compose.yaml` (drift-tested) |
 
 Key paths (`CacheDir` defaults to `$XDG_CACHE_HOME/cld`, i.e. `~/.cache/cld`):
 
@@ -25,7 +26,10 @@ Key paths (`CacheDir` defaults to `$XDG_CACHE_HOME/cld`, i.e. `~/.cache/cld`):
 ## Topology
 
 The daemon is the only component with a docker client. It manages *sibling*
-devcontainers; it never runs inside the container it is provisioning.
+devcontainers; it never runs inside the container it is provisioning. It is
+normally run as a container by `cld install` (equivalently the reference
+`docker-compose.yaml`), which is also what enables in-container access below; it
+can still run directly on the host via `cld serve`.
 
 ```
         ┌────────────────────── daemon side (host or compose container) ──────────────────────┐
