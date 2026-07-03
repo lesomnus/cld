@@ -106,12 +106,15 @@ docker event를 listen해서 devcontainer가 뜨면, 호스트에 캐시해둔 c
 - **복사-인**: `ensure()`에서 첫 세션 생성 전에 복원.
 - **백업 저장소는 global과 per-project로 분리** (`$XDG_DATA_HOME` = `~/.local/share/cld/` — 지워지면 안 되는 데이터라 cache가 아님):
   - `global/`: `.credentials.json`, `.claude.json`(전역 키), `settings.json`, `CLAUDE.md`·`agents/`·`skills/` 등 프로젝트 무관 상태. 어느 컨테이너에서 나왔든 마지막 것이 최신.
-  - `projects/<local_folder 해시>/`: `projects/<인코딩된 cwd>/` 트랜스크립트(+세션 하위 디렉터리), `file-history/`(`/rewind`용).
+  - `projects/<백업 키>/`: `projects/<인코딩된 cwd>/` 트랜스크립트(+세션 하위 디렉터리), `file-history/`(`/rewind`용).
+  - **백업 키는 devcontainer.json의 `name`으로 키잉**한다(`cld-<slug(name)>`). 컨테이너 안은 다 `/workspace`라도 `name`은 프로젝트마다 다르니 대화가 안 섞이고, 경로를 옮기거나 다른 머신에서 클론해도 `name`만 같으면 대화가 이어진다(휴대성). 표시 이름·tmux 세션 이름도 `name` 기준. `name`이 없으면 폴더명 + 짧은 경로 해시로 폴백(`cld-<basename>-<해시6>`, 유일성 보장).
+    - 트레이드오프(사용자 선택): `name`이 유일하지 않으므로 우연히 같은 이름인 무관한 프로젝트끼리는 대화가 공유된다. 템플릿 기본 이름(`"Node.js"` 등)에 주의.
+    - `name`은 config_file(호스트 devcontainer.json)에서 읽는다 → 데몬을 컨테이너에서 돌려 그 경로가 안 보이면 폴더명 폴백으로 degrade (workspaceFolder 해석과 동일한 한계).
   - 이렇게 나눠야 **새 프로젝트의 첫 컨테이너도 로그인 없이 시작**한다(global만 복원) — 최초 1회 로그인이 이후 모든 프로젝트·컨테이너로 전파된다. 마운트 제거의 전제 조건.
   - 복원 = global 복사 → 해당 프로젝트 오버레이 → `.claude.json`은 global 백업본 위에 이 프로젝트의 시드 키 병합.
   - 제외: `shell-snapshots/`, `sessions/`, `session-env/`, 캐시류, legacy `todos/`·`statsig/`.
 - 새 컨테이너의 워크스페이스 경로가 백업 당시와 다르면 인코딩 디렉터리 rename + jsonl 안의 `cwd` 문자열 치환. (같은 devcontainer 구성이면 경로가 같으므로 드문 케이스 — 단순 구현으로 충분.)
-- 한계: 같은 local_folder로 컨테이너를 동시에 2개 띄우면 백업은 마지막에 복사-아웃된 쪽이 이긴다.
+- 같은 백업 키(같은 `name`)의 컨테이너가 동시에 여러 개 뜨면 프로젝트 키별 락으로 복사 손상은 막되, 내용은 마지막에 복사-아웃된 쪽이 이긴다.
 
 ## ls 명령어
 

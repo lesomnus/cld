@@ -54,11 +54,12 @@ type entry struct {
 	item Item                 // worker-owned canonical state
 	snap atomic.Pointer[Item] // published copy for Items()
 
-	user    string
-	uid     int
-	gid     int
-	home    string
-	cfg_dir string
+	user     string
+	uid      int
+	gid      int
+	home     string
+	cfg_dir  string
+	dev_name string // devcontainer.json "name", or "" if unset
 
 	platform     release.Platform
 	arch_ok      bool // container arch == host arch; self-copy and watcher possible
@@ -109,6 +110,10 @@ type Daemon struct {
 	// global_mu guards the shared global backup dir, which every container
 	// reads (restore) and writes (copy-out).
 	global_mu sync.RWMutex
+	// proj_locks serializes access to a project backup dir, which containers
+	// that share a backup key (same devcontainer name) would otherwise write
+	// concurrently.
+	proj_locks keyedLock
 
 	mu      sync.Mutex
 	entries map[string]*entry

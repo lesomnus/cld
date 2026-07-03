@@ -472,6 +472,60 @@ func TestSessionLifecycle(t *testing.T) {
 	_ = ctr
 }
 
+func TestNameKeying(t *testing.T) {
+	cli := require_docker(t)
+	pull_image(t, cli)
+	server := fake_release(t, "9.9.9", []byte(fake_claude))
+
+	tmp := t.TempDir()
+	cfg := &config.Config{
+		CacheDir: filepath.Join(tmp, "cache"),
+		DataDir:  filepath.Join(tmp, "data"),
+		Release:  config.ReleaseConfig{BaseURL: server.URL, Channel: "stable", CheckInterval: config.Duration(time.Hour)},
+		Sync:     config.SyncConfig{Debounce: config.Duration(200 * time.Millisecond), FallbackInterval: config.Duration(time.Minute)},
+	}
+	self := build_cld(t)
+	t.Cleanup(func() { exec.Command("tmux", "-S", cfg.TmuxSocketPath(), "kill-server").Run() })
+
+	_, stop := start_daemon(t, cfg, cli, self)
+	defer stop()
+
+	// The daemon reads devcontainer.json from the config_file label path on its
+	// own filesystem, so write one carrying a name.
+	lf := fmt.Sprintf("/tmp/named-%d", time.Now().UnixNano())
+	require.NoError(t, os.MkdirAll(filepath.Join(lf, ".devcontainer"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(lf, ".devcontainer", "devcontainer.json"),
+		[]byte(`{"name": "acme/api", "workspaceFolder": "/workspace"}`), 0o644))
+
+	ctr := run_devcontainer(t, cli, lf)
+	_ = ctr
+
+	wait_for(t, 60*time.Second, "ready", func() bool {
+		it := find_item(must_items(t, cfg), "acme-api")
+		return it != nil && it.Status == StatusReady
+	})
+
+	t.Run("display name is the slugged devcontainer name", func(t *testing.T) {
+		require.NotNil(t, find_item(must_items(t, cfg), "acme-api"))
+	})
+	t.Run("backup is keyed by the name, not the path", func(t *testing.T) {
+		// A sync must land under projects/cld-acme-api/, not a path hash.
+		_, _, err := dockerx.ExecOutput(t.Context(), cli, ctr, "", []string{
+			"sh", "-c",
+			`mkdir -p /root/.claude/projects/-workspace` +
+				` && echo '{"cwd":"/workspace"}' > /root/.claude/projects/-workspace/s1.jsonl`,
+		})
+		require.NoError(t, err)
+
+		want := filepath.Join(cfg.ProjectBackupDir("cld-acme-api"), "projects", "-workspace", "s1.jsonl")
+		wait_for(t, 20*time.Second, "name-keyed backup", func() bool {
+			_, err := os.Stat(want)
+			return err == nil
+		})
+	})
+}
+
 func must_items(t *testing.T, cfg *config.Config) []Item {
 	t.Helper()
 	items, err := FetchItems(context.Background(), cfg.SocketPath())

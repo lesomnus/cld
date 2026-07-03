@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/lesomnus/cld/internal/claude"
+	"github.com/lesomnus/cld/internal/devc"
 	"github.com/lesomnus/cld/internal/syncer"
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/client"
@@ -41,16 +42,31 @@ func (b *lineBuffer) String() string {
 }
 
 func (d *Daemon) layout(e *entry) syncer.Layout {
-	key := hex.EncodeToString(sha256_of(e.item.LocalFolder))[:16]
 	return syncer.Layout{
 		GlobalDir:  d.cfg.GlobalBackupDir(),
-		ProjectDir: d.cfg.ProjectBackupDir(key),
+		ProjectDir: d.cfg.ProjectBackupDir(d.backup_key(e)),
 	}
 }
 
-func sha256_of(s string) []byte {
+// backup_key names a project's conversation backup. It is keyed by the
+// devcontainer.json "name" (so the history follows the project across path
+// moves and machines, and same-named projects intentionally share it),
+// namespaced with "cld-". Without a name there is no portable identifier, so
+// it falls back to the folder name plus a short path hash to stay unique.
+func (d *Daemon) backup_key(e *entry) string {
+	if s := devc.Slug(e.dev_name); s != "" {
+		return "cld-" + s
+	}
+	base := devc.Slug(devc.DisplayName(e.item.LocalFolder))
+	if base == "" {
+		base = "devcontainer"
+	}
+	return "cld-" + base + "-" + short_hash(e.item.LocalFolder)
+}
+
+func short_hash(s string) string {
 	h := sha256.Sum256([]byte(s))
-	return h[:]
+	return hex.EncodeToString(h[:])[:6]
 }
 
 // mark accumulates dirty flags and wakes the sync loop without blocking or
@@ -111,14 +127,19 @@ func (d *Daemon) copy_out(ctx context.Context, e *entry, p dirty) {
 		return
 	}
 
+	// Serialize with any other container writing the same backup: the global
+	// dir is shared by all, the project dir by same-keyed (same-name) ones.
+	if p.project {
+		l := d.proj_locks.get(d.backup_key(e))
+		l.Lock()
+		defer l.Unlock()
+	}
 	if p.global {
 		d.global_mu.Lock()
-	}
-	err := syncer.CopyOut(ctx, d.cli, e.id, e.cfg_dir, d.layout(e), e.item.Workspace, p.global, p.project)
-	if p.global {
-		d.global_mu.Unlock()
+		defer d.global_mu.Unlock()
 	}
 
+	err := syncer.CopyOut(ctx, d.cli, e.id, e.cfg_dir, d.layout(e), e.item.Workspace, p.global, p.project)
 	if err != nil && ctx.Err() == nil {
 		d.log.Warn("copy-out failed",
 			slog.String("name", e.item.Name), slog.String("error", err.Error()))

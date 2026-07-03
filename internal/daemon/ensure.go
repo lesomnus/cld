@@ -70,9 +70,8 @@ func (d *Daemon) ensure_(ctx context.Context, e *entry, allow_session bool) erro
 		return nil
 	}
 
-	if e.item.Name == "" {
+	if e.item.LocalFolder == "" {
 		e.item.LocalFolder = local_folder
-		e.item.Name = d.unique_name(id, devc.DisplayName(local_folder))
 	}
 
 	// A new container generation (restart) re-opens the session decision.
@@ -99,6 +98,19 @@ func (d *Daemon) ensure_(ctx context.Context, e *entry, allow_session bool) erro
 		if err := d.resolve(ctx, e, id, labels, &c); err != nil {
 			return fmt.Errorf("resolve identity: %w", err)
 		}
+	}
+
+	if e.item.Name == "" {
+		// Prefer the devcontainer.json "name"; fall back to the folder name.
+		display := devc.Slug(e.dev_name)
+		if display == "" {
+			display = devc.Slug(devc.DisplayName(local_folder))
+		}
+		if display == "" {
+			display = "devcontainer"
+		}
+		e.item.Name = d.unique_name(id, display)
+		e.publish()
 	}
 
 	version, err := d.install_claude(ctx, e, id)
@@ -240,6 +252,7 @@ func (d *Daemon) resolve(ctx context.Context, e *entry, id string, labels map[st
 	if p := labels[devc.LabelConfigFile]; p != "" {
 		config_file, _ = os.ReadFile(p)
 	}
+	e.dev_name = devc.ProjectName(config_file)
 	e.item.Workspace = devc.WorkspaceFolder(config_file, e.item.LocalFolder, mounts)
 	if e.item.Workspace == "" {
 		return fmt.Errorf("cannot determine workspace folder for %s", e.item.LocalFolder)
@@ -400,6 +413,8 @@ func (d *Daemon) prepare_state(ctx context.Context, e *entry, id string) error {
 		}
 		if !ok {
 			l := d.layout(e)
+			pl := d.proj_locks.get(d.backup_key(e))
+			pl.Lock()
 			d.global_mu.RLock()
 			has := syncer.HasBackup(l)
 			var restore_err error
@@ -407,6 +422,7 @@ func (d *Daemon) prepare_state(ctx context.Context, e *entry, id string) error {
 				restore_err = syncer.CopyIn(ctx, d.cli, id, e.cfg_dir, l, e.item.Workspace, e.uid, e.gid)
 			}
 			d.global_mu.RUnlock()
+			pl.Unlock()
 			if restore_err != nil {
 				return fmt.Errorf("restore: %w", restore_err)
 			}

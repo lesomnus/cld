@@ -25,6 +25,39 @@ func TestSessionName(t *testing.T) {
 	})
 }
 
+func TestProjectName(t *testing.T) {
+	t.Run("reads name", func(t *testing.T) {
+		require.Equal(t, "lesomnus/cld", devc.ProjectName([]byte(`{
+			// devcontainer.json
+			"name": "lesomnus/cld",
+			"service": "dev",
+		}`)))
+	})
+	t.Run("absent", func(t *testing.T) {
+		require.Equal(t, "", devc.ProjectName([]byte(`{"service":"dev"}`)))
+	})
+	t.Run("empty or invalid", func(t *testing.T) {
+		require.Equal(t, "", devc.ProjectName(nil))
+		require.Equal(t, "", devc.ProjectName([]byte("nope")))
+	})
+}
+
+func TestSlug(t *testing.T) {
+	t.Run("keeps safe characters", func(t *testing.T) {
+		require.Equal(t, "my_app-1.2", devc.Slug("my_app-1.2"))
+	})
+	t.Run("collapses unsafe runs to a single dash", func(t *testing.T) {
+		require.Equal(t, "lesomnus-cld", devc.Slug("lesomnus/cld"))
+		require.Equal(t, "a-b", devc.Slug("a  //  b"))
+	})
+	t.Run("trims leading and trailing separators", func(t *testing.T) {
+		require.Equal(t, "app", devc.Slug("  /app/  "))
+	})
+	t.Run("empty when nothing survives", func(t *testing.T) {
+		require.Equal(t, "", devc.Slug("///"))
+	})
+}
+
 func TestRemoteUser(t *testing.T) {
 	t.Run("last remoteUser wins", func(t *testing.T) {
 		v := devc.RemoteUser(`[{"remoteUser":"root"},{"foo":1},{"remoteUser":"vscode"}]`)

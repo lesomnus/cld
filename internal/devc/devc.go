@@ -30,6 +30,43 @@ func DisplayName(local_folder string) string {
 	return filepath.Base(filepath.Clean(local_folder))
 }
 
+// ProjectName returns the "name" field from a devcontainer.json, or "" if it
+// is absent or the document cannot be parsed.
+func ProjectName(config_file []byte) string {
+	if len(config_file) == 0 {
+		return ""
+	}
+	var c struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(StripJSONC(config_file), &c); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(c.Name)
+}
+
+// Slug turns an arbitrary name into a single, filesystem- and tmux-safe path
+// component: any run of characters outside [A-Za-z0-9._-] becomes a single
+// "-", and leading/trailing "-" and "." are trimmed. Returns "" for a name
+// that slugs to nothing.
+func Slug(name string) string {
+	var b strings.Builder
+	b.Grow(len(name))
+	dash := false
+	for _, r := range name {
+		ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' ||
+			r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-'
+		if ok {
+			b.WriteRune(r)
+			dash = false
+		} else if !dash {
+			b.WriteByte('-')
+			dash = true
+		}
+	}
+	return strings.Trim(b.String(), "-.")
+}
+
 // SessionName is the tmux session name for a display name.
 // "." and ":" collide with tmux target syntax so they are replaced.
 func SessionName(name string) string {
