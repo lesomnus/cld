@@ -9,10 +9,22 @@ import (
 	"strings"
 )
 
-// ConfigDirName is the directory under the user's home that CLAUDE_CONFIG_DIR
-// is pointed at, so that .claude.json lives inside the backed-up directory
-// instead of its default location at $HOME/.claude.json.
-const ConfigDirName = ".claude"
+// ConfigDirIn is where CLAUDE_CONFIG_DIR points inside a container: a
+// cld-owned directory, deliberately NOT the default ~/.claude. Users commonly
+// bind-mount a shared ~/.claude into every devcontainer; with all workspaces
+// at the same in-container path (e.g. /workspace) that merges every project's
+// conversations into one history. A dedicated directory keeps cld's per-project
+// sync authoritative regardless of such mounts. It also puts .claude.json
+// inside the backed-up directory instead of its default $HOME/.claude.json.
+func ConfigDirIn(home string) string {
+	return home + "/.cld/claude"
+}
+
+// LegacyConfigDirIn is claude's default config dir; used only to bootstrap
+// credentials from a user's existing bind-mounted ~/.claude.
+func LegacyConfigDirIn(home string) string {
+	return home + "/.claude"
+}
 
 // EncodeProjectPath encodes a workspace path the way Claude Code names
 // transcript directories under projects/: every non-alphanumeric CHARACTER

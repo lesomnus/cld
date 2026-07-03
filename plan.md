@@ -95,6 +95,26 @@ docker event를 listen해서 devcontainer가 뜨면, 호스트에 캐시해둔 c
   - `settings.json`에는 `cleanupPeriodDays: 365`를 시드 (기본 30일, mtime 기준 시작 시 삭제 — 복원된 옛 대화가 지워지는 것 방지).
 - 로그인(자격증명)은 시드로 해결되지 않는다. **최초 1회만** 사용자가 첫 `cld it`에서 로그인하면 `.credentials.json`이 global 백업으로 복사-아웃되고, 이후 모든 컨테이너·프로젝트에 복원된다(아래 "대화 기록 지속"). `~/.claude`를 마운트하는 기존 구성에서도 동작하지만, cld가 자리잡으면 마운트는 없앨 예정. 추후 옵션: `claude setup-token`으로 만든 `CLAUDE_CODE_OAUTH_TOKEN`을 세션 환경에 주입.
 
+## config dir 격리 (구현됨)
+
+- 세션의 `CLAUDE_CONFIG_DIR`은 `<home>/.claude`가 **아니라 `<home>/.cld/claude`**(cld 전용). 사용자가 devcontainer에 `~/.claude`를 공유 마운트하고 모든 워크스페이스가 `/workspace`면 대화가 `projects/-workspace/` 한 바구니로 뭉치는데(경로 키가 동일), 전용 dir이면 cld의 프로젝트별 sync가 마운트와 무관하게 권위를 갖는다.
+- 기존 `~/.claude` 마운트 사용자를 위해: cld dir에 자격증명이 없고 백업도 없으면 컨테이너의 `~/.claude/.credentials.json`을 cld dir로 **1회 부트스트랩**(무로그인 유지). 이후는 global 백업이 진실.
+- `bind_mounted` 특별처리(마운트면 sync 안 함)는 제거 — 이제 cld dir이 마운트 대상이 아니므로 항상 sync가 권위.
+
+## 로케일 (구현됨)
+
+- claude TUI는 UTF-8 로케일이 없으면 비ASCII를 `_`로 렌더한다. tmux는 **서버/클라이언트 둘 다** UTF-8이어야 한다. 그래서: tmux 서버를 `LC_ALL=C.UTF-8`로 기동, attach 클라이언트 exec에도 `LC_ALL=C.UTF-8`, 세션 env에 `LANG=C.UTF-8`, 런타임 이미지에 `ENV LANG/LC_ALL=C.UTF-8`.
+
+## SSH agent 포워딩 + gitconfig (구현됨)
+
+- VS Code Dev Containers와 동일한 목표: 세션 안에서 서명 커밋·SSH push가 되게. 두 조각.
+- **gitconfig**: `cld it`/`up`이 호스트 `~/.gitconfig`를 `<cache>/gitconfig`로 스테이징 → 데몬이 세션 config dir에 복사 → 세션 env `GIT_CONFIG_GLOBAL`로 지정. (`.claude.json` 복사와 동일 메커니즘)
+- **agent 릴레이**: 사후 마운트 불가 + agent 소켓 경로가 SSH 로그인마다 바뀌므로 릴레이로 구현.
+  - 컨테이너 안 `cld x agent <sock>`가 unix 소켓을 listen하고, 각 연결을 프레임 mux(`internal/agentx`)로 **exec stdio 위에** 실어 데몬으로. 데몬이 연결마다 호스트 agent 소스로 dial해 브릿지. 세션 env `SSH_AUTH_SOCK`=그 소켓.
+  - **소스 안정화**: 데몬의 `$SSH_AUTH_SOCK`은 데몬을 띄운 로그인 세션이 끝나면 stale. 그래서 `cld agent export`(호스트 상주)가 `<cache>/agent.sock`을 서빙하고 연결마다 `<cache>/agent.source`(= 현재 `$SSH_AUTH_SOCK`, `cld it`/`up`이 attach마다 갱신)로 forward. 데몬은 `<cache>/agent.sock` 우선 dial → 재로그인해도 항상 현재 agent. compose 데몬도 마운트된 cache 통해 동일.
+  - arch 불일치(컨테이너에서 cld 못 돎)면 릴레이 없음 → `SSH_AUTH_SOCK` 주입 안 함.
+  - 보안: 붙어 있는 동안만 agent 사용 가능(로그아웃하면 source가 죽어 자연히 끊김). 컨테이너 코드가 키 **사용**은 가능(추출은 불가) — VS Code와 동일 트레이드오프, `auth.forward_agent: false`로 차단.
+
 ## 대화 기록 지속 (컨테이너 재생성 대응)
 
 사후 마운트가 불가능하므로 `docker cp` 스냅샷으로 대화 기록을 컨테이너 밖에 보존하고, 같은 프로젝트의 새 컨테이너에 복원한다.

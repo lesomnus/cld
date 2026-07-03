@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/lesomnus/cld/cmd/config"
+	"github.com/lesomnus/cld/internal/devc"
 	"github.com/lesomnus/cld/internal/dockerx"
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
@@ -119,6 +120,24 @@ func TestUpE2E(t *testing.T) {
 			}
 		}
 		return false
+	})
+
+	// The devcontainer CLI created a container we don't own a handle to; remove
+	// it so it doesn't linger on the shared engine and get re-provisioned by
+	// later tests' daemons (inotify exhaustion).
+	t.Cleanup(func() {
+		res, err := cli.ContainerList(context.Background(), client.ContainerListOptions{
+			All:     true,
+			Filters: client.Filters{"label": {devc.LabelLocalFolder + "=" + ws: true}},
+		})
+		if err != nil {
+			return
+		}
+		for _, c := range res.Items {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			cli.ContainerRemove(ctx, c.ID, client.ContainerRemoveOptions{Force: true})
+			cancel()
+		}
 	})
 }
 

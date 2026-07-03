@@ -19,6 +19,12 @@ auth:
   # only the path (never the token) appears in the tmux command.
   #oauth_token_file: ~/.config/cld/oauth-token
 
+  # Relay the host ssh-agent into each session (SSH_AUTH_SOCK), so `git commit`
+  # can sign and SSH pushes work inside the container — like VS Code Dev
+  # Containers. Enabled by default; set false to keep the agent off-limits to
+  # container code.
+  #forward_agent: true
+
 release:
   # Base URL of the Claude Code release channel.
   #base_url: https://downloads.claude.ai/claude-code-releases

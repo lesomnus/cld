@@ -61,12 +61,12 @@ type entry struct {
 	cfg_dir  string
 	dev_name string // devcontainer.json "name", or "" if unset
 
-	platform     release.Platform
-	arch_ok      bool // container arch == host arch; self-copy and watcher possible
-	bind_mounted bool // config dir is a host bind mount; sync is not ours to do
+	platform release.Platform
+	arch_ok  bool // container arch == host arch; self-copy and watcher possible
 
 	restored     bool
 	session_done bool   // session was evaluated for the current start generation
+	git_config   bool   // host gitconfig was installed into the config dir
 	started_at   string // container State.StartedAt of the current generation
 	version      string
 
@@ -258,7 +258,7 @@ func (d *Daemon) handle_event(ctx context.Context, msg events.Message) {
 	switch msg.Action {
 	case "start":
 		e := d.get_or_create(id)
-		e.mbox.post(func() { d.ensure(ctx, e, true) })
+		e.mbox.post(func() { d.ensure(ctx, e) })
 	case "die":
 		if e := d.lookup(id); e != nil {
 			e.mbox.post(func() { d.stop(ctx, e) })
@@ -287,7 +287,7 @@ func (d *Daemon) reconcile(ctx context.Context) {
 	for _, c := range res.Items {
 		alive[c.ID] = true
 		e := d.get_or_create(c.ID)
-		e.mbox.post(func() { d.ensure(ctx, e, true) })
+		e.mbox.post(func() { d.ensure(ctx, e) })
 	}
 
 	d.mu.Lock()

@@ -104,6 +104,11 @@ One caution: everything keys off the `name` field in devcontainer.json. Give
 each project a distinct name — two projects sharing a name share a
 conversation history.
 
+**Git inside a session** works like VS Code Dev Containers: your `~/.gitconfig`
+is copied in, and your host ssh-agent is relayed (`SSH_AUTH_SOCK`), so signed
+commits and SSH pushes just work — the agent is available while you're
+attached. Turn it off with `auth.forward_agent: false`.
+
 ## Configuration
 
 All settings are optional; see `cld.yaml` for the full list with defaults.

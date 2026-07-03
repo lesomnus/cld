@@ -40,6 +40,18 @@ type AuthConfig struct {
 	// interactive login. The path (not the token) is all that appears in the
 	// tmux command; keep the file mode 0600.
 	OAuthTokenFile string `yaml:"oauth_token_file"`
+
+	// ForwardAgent relays the host ssh-agent into each session (SSH_AUTH_SOCK),
+	// so `git commit` can sign and `git push` over SSH works inside the
+	// container — like VS Code Dev Containers. Enabled by default; set false to
+	// keep the agent off-limits to container code. Pointer so an unset value
+	// still defaults to true.
+	ForwardAgent *bool `yaml:"forward_agent"`
+}
+
+// ForwardAgentEnabled reports whether ssh-agent forwarding is on (default true).
+func (c AuthConfig) ForwardAgentEnabled() bool {
+	return c.ForwardAgent == nil || *c.ForwardAgent
 }
 
 type UpConfig struct {
@@ -143,6 +155,27 @@ func (c *Config) SocketPath() string {
 // TmuxSocketPath is the path to the socket of the dedicated tmux server.
 func (c *Config) TmuxSocketPath() string {
 	return filepath.Join(c.CacheDir, "tmux.sock")
+}
+
+// AgentSocketPath is where `cld agent export` serves the forwarded ssh-agent
+// (a stable path the daemon dials, shared into a compose daemon via the mounted
+// cache dir).
+func (c *Config) AgentSocketPath() string {
+	return filepath.Join(c.CacheDir, "agent.sock")
+}
+
+// AgentSourcePath records the current host $SSH_AUTH_SOCK for the exporter to
+// forward to; `cld it`/`cld up` refresh it each attach so a new login session's
+// agent is picked up.
+func (c *Config) AgentSourcePath() string {
+	return filepath.Join(c.CacheDir, "agent.source")
+}
+
+// GitConfigPath is where the host's ~/.gitconfig is staged for the daemon to
+// copy into each session (so identity and signing config match the host, like
+// VS Code Dev Containers).
+func (c *Config) GitConfigPath() string {
+	return filepath.Join(c.CacheDir, "gitconfig")
 }
 
 // BinDir is the root of the claude binary cache,

@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lesomnus/cld/internal/agentx"
 	"github.com/lesomnus/cld/internal/claude"
 	"github.com/lesomnus/cld/internal/daemon"
 	"github.com/lesomnus/cld/internal/termx"
@@ -29,6 +30,7 @@ func NewCmdX() *xli.Command {
 		Commands: []*xli.Command{
 			new_cmd_x_exec(),
 			new_cmd_x_watch(),
+			new_cmd_x_agent(),
 		},
 		Handler: xli.RequireSubcommand(),
 	}
@@ -51,7 +53,7 @@ func new_cmd_x_exec() *xli.Command {
 				// Not mode-gated: xli runs flag handlers before the run mode
 				// is set, so a mode.Run gate would never fire and silently
 				// drop every --env.
-				Handler: flg.Handle[string](func(_ context.Context, v string) error {
+				Handler: flg.Handle(func(_ context.Context, v string) error {
 					envs = append(envs, v)
 					return nil
 				}),
@@ -108,6 +110,28 @@ func new_cmd_x_exec() *xli.Command {
 			}
 			os.Exit(code)
 			return nil
+		}),
+	}
+}
+
+func new_cmd_x_agent() *xli.Command {
+	return &xli.Command{
+		Name:  "agent",
+		Brief: "serve an ssh-agent socket, relaying connections to the daemon over stdio",
+		Args: arg.Args{
+			&arg.String{Name: "socket", Brief: "unix socket path to listen on"},
+		},
+		Handler: xli.OnRun(func(ctx context.Context, cmd *xli.Command, next xli.Next) error {
+			sock := arg.MustGet[string](cmd, "socket")
+
+			ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+			defer stop()
+
+			err := agentx.ListenAndServe(ctx, sock, os.Stdin, os.Stdout)
+			if err == context.Canceled {
+				return nil
+			}
+			return err
 		}),
 	}
 }

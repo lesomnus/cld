@@ -66,6 +66,10 @@ FROM alpine:3.20 AS app
 # setpriv drops privileges in the entrypoint.
 RUN apk add --no-cache tmux ca-certificates setpriv
 
+# tmux renders non-ASCII as "_" for any client or server running in the "C"
+# locale; the daemon and its tmux server must live in UTF-8.
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+
 # For `serve`, the entrypoint runs as root only to chown the mounted cache/data
 # dirs (Docker creates a missing bind source as root) and to grant the Docker
 # socket's group, then drops to PUID:PGID (default 1000). Other commands, and

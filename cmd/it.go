@@ -42,6 +42,10 @@ func NewCmdIt() *xli.Command {
 				}
 			}
 
+			// Publish this login session's ssh-agent for forwarding into the
+			// container before we hand the terminal over.
+			prepareHostShare(c)
+
 			// Ask the daemon where the tmux server lives. When the daemon runs
 			// in a container, attach through a docker exec into it — the host
 			// then needs no tmux at all. Without a reachable daemon, fall back
@@ -104,8 +108,10 @@ func attach_via_exec(ctx context.Context, info *daemon.Info, session string, nam
 	code, err := termx.Run(ctx, cli, termx.ExecOptions{
 		Container: info.ContainerID,
 		User:      strconv.Itoa(info.UID),
-		Env:       []string{"TERM=" + term},
-		Cmd:       []string{"tmux", "-S", info.TmuxSocket, "attach-session", "-t", "=" + session},
+		// Without a UTF-8 locale tmux renders every non-ASCII glyph to this
+		// client as "_".
+		Env: []string{"TERM=" + term, "LC_ALL=C.UTF-8"},
+		Cmd: []string{"tmux", "-S", info.TmuxSocket, "attach-session", "-t", "=" + session},
 	})
 	if err != nil {
 		return err

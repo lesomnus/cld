@@ -58,6 +58,11 @@ func NewCmdUp() *xli.Command {
 			}
 			defer cli.Close()
 
+			// Stage gitconfig and the ssh-agent BEFORE creating the container,
+			// so the daemon has them when it provisions the new container (its
+			// install_gitconfig and agent relay both read the cache dir).
+			prepareHostShare(c)
+
 			runner := devcup.Resolve(o, exec.LookPath, func(ctx context.Context) error {
 				return devcup.RunContainerized(ctx, cli, o)
 			})

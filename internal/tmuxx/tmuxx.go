@@ -5,6 +5,7 @@ package tmuxx
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -16,7 +17,19 @@ type Server struct {
 
 func (s *Server) run(ctx context.Context, args ...string) (string, error) {
 	argv := append([]string{"-S", s.Socket}, args...)
-	out, err := exec.CommandContext(ctx, "tmux", argv...).CombinedOutput()
+	cmd := exec.CommandContext(ctx, "tmux", argv...)
+	// The server inherits the environment of whichever tmux invocation starts
+	// it; force a UTF-8 locale so it never comes up in "C" (where non-ASCII
+	// renders as "_"). A pre-existing LC_ALL must be dropped first — glibc
+	// getenv returns the first match, so a plain append would be shadowed.
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "LC_ALL=") {
+			env = append(env, kv)
+		}
+	}
+	cmd.Env = append(env, "LC_ALL=C.UTF-8")
+	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }
 

@@ -70,7 +70,7 @@ func (d *Daemon) api() http.Handler {
 			if gen != "" && gen != e.started_at {
 				return
 			}
-			if !e.bind_mounted && e.item.Workspace != "" {
+			if e.item.Workspace != "" {
 				d.copy_out(d.base_ctx, e, dirty{global: true, project: true})
 			}
 			// Persist that the user ended this generation's session so a

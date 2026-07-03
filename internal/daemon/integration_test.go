@@ -239,7 +239,7 @@ func TestDaemon(t *testing.T) {
 		require.True(t, ok)
 	})
 	t.Run("seeds onboarding and retention state", func(t *testing.T) {
-		out, code, err := dockerx.ExecOutput(t.Context(), cli, ctr, "", []string{"cat", "/root/.claude/.claude.json"})
+		out, code, err := dockerx.ExecOutput(t.Context(), cli, ctr, "", []string{"cat", "/root/.cld/claude/.claude.json"})
 		require.NoError(t, err)
 		require.Equal(t, 0, code)
 
@@ -249,7 +249,7 @@ func TestDaemon(t *testing.T) {
 		project := state["projects"].(map[string]any)["/workspace"].(map[string]any)
 		require.Equal(t, true, project["hasTrustDialogAccepted"])
 
-		out, _, err = dockerx.ExecOutput(t.Context(), cli, ctr, "", []string{"cat", "/root/.claude/settings.json"})
+		out, _, err = dockerx.ExecOutput(t.Context(), cli, ctr, "", []string{"cat", "/root/.cld/claude/settings.json"})
 		require.NoError(t, err)
 		require.Contains(t, out, "cleanupPeriodDays")
 	})
@@ -271,14 +271,14 @@ func TestDaemon(t *testing.T) {
 		})
 		// The session env must actually reach the pane (regression: a
 		// mode-gated flag handler silently dropped every --env).
-		require.Contains(t, capture(), "config: /root/.claude")
+		require.Contains(t, capture(), "config: /root/.cld/claude")
 	})
 	t.Run("watcher syncs changes out to the backup", func(t *testing.T) {
 		_, code, err := dockerx.ExecOutput(t.Context(), cli, ctr, "", []string{
 			"sh", "-c",
-			`mkdir -p /root/.claude/projects/-workspace` +
-				` && echo '{"cwd":"/workspace"}' > /root/.claude/projects/-workspace/s1.jsonl` +
-				` && echo secret > /root/.claude/.credentials.json`,
+			`mkdir -p /root/.cld/claude/projects/-workspace` +
+				` && echo '{"cwd":"/workspace"}' > /root/.cld/claude/projects/-workspace/s1.jsonl` +
+				` && echo secret > /root/.cld/claude/.credentials.json`,
 		})
 		require.NoError(t, err)
 		require.Equal(t, 0, code)
@@ -320,12 +320,12 @@ func TestDaemon(t *testing.T) {
 			return it != nil && it.Status == StatusReady
 		})
 
-		out, code, err := dockerx.ExecOutput(t.Context(), cli, ctr2, "", []string{"cat", "/root/.claude/projects/-workspace/s1.jsonl"})
+		out, code, err := dockerx.ExecOutput(t.Context(), cli, ctr2, "", []string{"cat", "/root/.cld/claude/projects/-workspace/s1.jsonl"})
 		require.NoError(t, err)
 		require.Equal(t, 0, code)
 		require.Contains(t, out, `"cwd":"/workspace"`)
 
-		out, code, err = dockerx.ExecOutput(t.Context(), cli, ctr2, "", []string{"cat", "/root/.claude/.credentials.json"})
+		out, code, err = dockerx.ExecOutput(t.Context(), cli, ctr2, "", []string{"cat", "/root/.cld/claude/.credentials.json"})
 		require.NoError(t, err)
 		require.Equal(t, 0, code)
 		require.Contains(t, out, "secret")
@@ -339,6 +339,61 @@ func TestDaemon(t *testing.T) {
 			return err == nil && strings.Contains(string(out), "args:--continue")
 		})
 	})
+}
+
+// TestLegacyCredentialBootstrap: a container whose default ~/.claude carries
+// credentials (a user's bind mount) gets them copied into cld's own config
+// dir — but only when no backup supplied them (backup wins; hence the
+// isolated daemon with an empty DataDir).
+func TestLegacyCredentialBootstrap(t *testing.T) {
+	cli := require_docker(t)
+	pull_image(t, cli)
+	server := fake_release(t, "9.9.9", []byte(fake_claude))
+
+	tmp := t.TempDir()
+	cfg := &config.Config{
+		CacheDir: filepath.Join(tmp, "cache"),
+		DataDir:  filepath.Join(tmp, "data"),
+		Release:  config.ReleaseConfig{BaseURL: server.URL, Channel: "stable", CheckInterval: config.Duration(time.Hour)},
+		Sync:     config.SyncConfig{Debounce: config.Duration(200 * time.Millisecond), FallbackInterval: config.Duration(time.Minute)},
+	}
+	t.Cleanup(func() { exec.Command("tmux", "-S", cfg.TmuxSocketPath(), "kill-server").Run() })
+	_, stop := start_daemon(t, cfg, cli, build_cld(t))
+	defer stop()
+
+	lf := fmt.Sprintf("/tmp/legacy-%d", time.Now().UnixNano())
+	created, err := cli.ContainerCreate(t.Context(), client.ContainerCreateOptions{
+		Config: &container.Config{
+			Image: test_image,
+			Cmd: []string{"sh", "-c",
+				`mkdir -p /root/.claude && echo legacy-cred > /root/.claude/.credentials.json && sleep 2147483647`},
+			Labels: map[string]string{
+				devc.LabelLocalFolder: lf,
+				devc.LabelMetadata:    `[{"remoteUser":"root"}]`,
+			},
+		},
+		HostConfig: &container.HostConfig{Binds: []string{lf + ":/workspace"}},
+	})
+	require.NoError(t, err)
+	legacy_ctr := created.ID
+	t.Cleanup(func() {
+		c, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		cli.ContainerRemove(c, legacy_ctr, client.ContainerRemoveOptions{Force: true})
+	})
+	_, err = cli.ContainerStart(t.Context(), legacy_ctr, client.ContainerStartOptions{})
+	require.NoError(t, err)
+
+	wait_for(t, 60*time.Second, "legacy container ready", func() bool {
+		it := find_item(must_items(t, cfg), devc.DisplayName(lf))
+		return it != nil && it.Status == StatusReady
+	})
+	out, code, err := dockerx.ExecOutput(t.Context(), cli, legacy_ctr, "", []string{
+		"cat", "/root/.cld/claude/.credentials.json",
+	})
+	require.NoError(t, err)
+	require.Equal(t, 0, code)
+	require.Contains(t, out, "legacy-cred")
 }
 
 // start_daemon builds a daemon on cfg and runs it until the returned stop is
@@ -513,8 +568,8 @@ func TestNameKeying(t *testing.T) {
 		// A sync must land under projects/cld-acme-api/, not a path hash.
 		_, _, err := dockerx.ExecOutput(t.Context(), cli, ctr, "", []string{
 			"sh", "-c",
-			`mkdir -p /root/.claude/projects/-workspace` +
-				` && echo '{"cwd":"/workspace"}' > /root/.claude/projects/-workspace/s1.jsonl`,
+			`mkdir -p /root/.cld/claude/projects/-workspace` +
+				` && echo '{"cwd":"/workspace"}' > /root/.cld/claude/projects/-workspace/s1.jsonl`,
 		})
 		require.NoError(t, err)
 

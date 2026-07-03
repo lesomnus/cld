@@ -31,11 +31,11 @@ const install_dir = "/usr/local/bin"
 // ensure is idempotent and safe to re-run on every event: it resolves the
 // container's identity, installs the binaries, restores and seeds state,
 // and starts the session and the watcher — each step only if missing.
-// allow_session gates session creation to start events and first sight, so
-// a session the user closed is not resurrected. It runs on the container's
-// worker goroutine, so entry state needs no lock.
-func (d *Daemon) ensure(ctx context.Context, e *entry, allow_session bool) {
-	err := d.ensure_(ctx, e, allow_session)
+// Session creation happens once per container generation (session_done,
+// keyed on StartedAt) so a session the user closed is not resurrected.
+// It runs on the container's worker goroutine, so entry state needs no lock.
+func (d *Daemon) ensure(ctx context.Context, e *entry) {
+	err := d.ensure_(ctx, e)
 	if err == nil {
 		return
 	}
@@ -49,7 +49,7 @@ func (d *Daemon) ensure(ctx context.Context, e *entry, allow_session bool) {
 	d.log.Error("provision failed", slog.String("id", short(e.id)), slog.String("error", err.Error()))
 }
 
-func (d *Daemon) ensure_(ctx context.Context, e *entry, allow_session bool) error {
+func (d *Daemon) ensure_(ctx context.Context, e *entry) error {
 	id := e.id
 	insp, err := d.cli.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
 	if err != nil {
@@ -84,7 +84,7 @@ func (d *Daemon) ensure_(ctx context.Context, e *entry, allow_session bool) erro
 	// pay the full provisioning cost on every reconcile; a user-ended
 	// session must keep its status too.
 	settled := e.item.Status == StatusReady || e.item.Status == StatusSessionEnded
-	if settled && e.cfg_dir != "" && e.session_done && (e.bind_mounted || e.watch_stop != nil) {
+	if settled && e.cfg_dir != "" && e.session_done && e.watch_stop != nil {
 		return nil
 	}
 
@@ -150,12 +150,15 @@ func (d *Daemon) ensure_(ctx context.Context, e *entry, allow_session bool) erro
 		e.session_done = true
 	}
 
-	if !e.bind_mounted && e.watch_stop == nil {
+	if e.watch_stop == nil {
 		wctx, stop := context.WithCancel(d.base_ctx)
 		e.watch_stop = stop
 		go d.sync_loop(wctx, e)
 		if e.arch_ok {
 			go d.watch_container(wctx, e, id)
+			if d.cfg.Auth.ForwardAgentEnabled() {
+				go d.relay_agent(wctx, e, id)
+			}
 		} else {
 			go d.poll_container(wctx, e)
 		}
@@ -180,7 +183,7 @@ func (d *Daemon) stop(ctx context.Context, e *entry) {
 		e.watch_stop()
 		e.watch_stop = nil
 	}
-	if !e.bind_mounted && e.item.Workspace != "" {
+	if e.item.Workspace != "" {
 		d.copy_out(ctx, e, dirty{global: true, project: true})
 	}
 	if e.item.Name != "" {
@@ -242,15 +245,12 @@ func (d *Daemon) resolve(ctx context.Context, e *entry, id string, labels map[st
 	if e.user == "" {
 		e.user = strings.TrimSpace(lines[0])
 	}
-	e.cfg_dir = path.Join(e.home, claude.ConfigDirName)
+	e.cfg_dir = claude.ConfigDirIn(e.home)
 	musl := lines[3] == "musl"
 
 	mounts := make([]devc.Mount, 0, len(c.Mounts))
 	for _, m := range c.Mounts {
 		mounts = append(mounts, devc.Mount{Source: m.Source, Destination: m.Destination})
-		if m.Destination == e.cfg_dir {
-			e.bind_mounted = true
-		}
 	}
 
 	var config_file []byte
@@ -399,9 +399,11 @@ func sha256_file(r io.Reader) (string, error) {
 // generation and only when the container has no state of its own yet —
 // a restarted container's state is newer than any backup.
 func (d *Daemon) prepare_state(ctx context.Context, e *entry, id string) error {
+	// The config dir is <home>/.cld/claude; create and own both levels.
+	parent := path.Dir(e.cfg_dir)
 	out, code, err := dockerx.ExecOutput(ctx, d.cli, id, "0", []string{
-		"sh", "-c", fmt.Sprintf(`mkdir -p %s && chown %d:%d %s`,
-			tmuxx.Quote(e.cfg_dir), e.uid, e.gid, tmuxx.Quote(e.cfg_dir)),
+		"sh", "-c", fmt.Sprintf(`mkdir -p %s && chown %d:%d %s %s`,
+			tmuxx.Quote(e.cfg_dir), e.uid, e.gid, tmuxx.Quote(parent), tmuxx.Quote(e.cfg_dir)),
 	})
 	if err != nil {
 		return err
@@ -411,7 +413,7 @@ func (d *Daemon) prepare_state(ctx context.Context, e *entry, id string) error {
 	}
 
 	state_path := path.Join(e.cfg_dir, ".claude.json")
-	if !e.bind_mounted && !e.restored {
+	if !e.restored {
 		_, ok, err := dockerx.ReadFile(ctx, d.cli, id, state_path)
 		if err != nil {
 			return err
@@ -438,6 +440,14 @@ func (d *Daemon) prepare_state(ctx context.Context, e *entry, id string) error {
 		e.restored = true
 	}
 
+	if err := d.bootstrap_credentials(ctx, e, id); err != nil {
+		return fmt.Errorf("bootstrap credentials: %w", err)
+	}
+
+	if err := d.install_gitconfig(ctx, e, id); err != nil {
+		return fmt.Errorf("install gitconfig: %w", err)
+	}
+
 	if err := d.seed_file(ctx, e, id, ".claude.json", 0o600, func(b []byte) ([]byte, error) {
 		return claude.SeedState(b, e.item.Workspace)
 	}); err != nil {
@@ -446,6 +456,30 @@ func (d *Daemon) prepare_state(ctx context.Context, e *entry, id string) error {
 	if err := d.seed_file(ctx, e, id, "settings.json", 0o644, claude.SeedSettings); err != nil {
 		return fmt.Errorf("seed settings: %w", err)
 	}
+	return nil
+}
+
+// bootstrap_credentials copies credentials from the container's default
+// ~/.claude (typically a user's legacy bind mount) into cld's config dir when
+// the latter has none — so existing setups keep working with zero logins
+// while cld's dir stays authoritative for everything else.
+func (d *Daemon) bootstrap_credentials(ctx context.Context, e *entry, id string) error {
+	dst := path.Join(e.cfg_dir, ".credentials.json")
+	if _, ok, err := dockerx.ReadFile(ctx, d.cli, id, dst); err != nil || ok {
+		return err
+	}
+
+	legacy := path.Join(claude.LegacyConfigDirIn(e.home), ".credentials.json")
+	data, ok, err := dockerx.ReadFile(ctx, d.cli, id, legacy)
+	if err != nil || !ok {
+		return err
+	}
+
+	if err := dockerx.WriteFile(ctx, d.cli, id, e.cfg_dir, ".credentials.json", 0o600, e.uid, e.gid, data); err != nil {
+		return err
+	}
+	d.log.Info("credentials bootstrapped from ~/.claude",
+		slog.String("id", short(id)), slog.String("name", e.item.Name))
 	return nil
 }
 
@@ -524,11 +558,26 @@ func (d *Daemon) ensure_session(ctx context.Context, e *entry, id string) error 
 // session_env is the environment injected into every claude session. The
 // daemon owns this policy in one place; the pane client just forwards it.
 func (d *Daemon) session_env(e *entry) []string {
-	return []string{
+	env := []string{
 		"CLAUDE_CONFIG_DIR=" + e.cfg_dir,
 		"DISABLE_AUTOUPDATER=1",
 		"TERM=xterm-256color",
+		// Devcontainer images often lack a locale; claude's TUI needs UTF-8.
+		"LANG=C.UTF-8",
 	}
+	// Point git at the host gitconfig copied into the config dir — but only
+	// when one was installed, so we don't shadow the image's own ~/.gitconfig
+	// with an empty file for users who have no host gitconfig.
+	if e.git_config {
+		env = append(env, "GIT_CONFIG_GLOBAL="+e.gitconfig_path())
+	}
+	// Point ssh clients (git signing/push) at the relay socket. Only when the
+	// relay actually runs (arch match); otherwise leave whatever the container
+	// already had.
+	if d.cfg.Auth.ForwardAgentEnabled() && e.arch_ok {
+		env = append(env, "SSH_AUTH_SOCK="+e.agent_sock())
+	}
+	return env
 }
 
 // recreate_session forces a fresh session for a container whose session the
