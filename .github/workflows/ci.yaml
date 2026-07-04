@@ -24,6 +24,29 @@ permissions:
   packages: write
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The daemon shells out to tmux, and ubuntu-latest already runs a Docker
+      # daemon, so the integration tests (guarded by require_docker) run for
+      # real here — unlike the -short unit gate baked into the image build,
+      # whose build stage has no Docker daemon.
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -trimpath -timeout 15m ./...
+
   build:
     runs-on: ubuntu-latest
     env:

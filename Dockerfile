@@ -16,8 +16,11 @@ ENV CGO_ENABLED=0
 
 FROM base AS test
 
+# A build stage has no Docker daemon, so run only the unit tests here: -short
+# skips the integration tests (guarded by require_docker), which need one. The
+# full suite runs in the `test` CI job on a runner that has Docker.
 RUN --mount=type=cache,target=/root/.cache/go-build \
-	go test -v -trimpath ./...
+	go test -short -v -trimpath ./...
 
 
 
