@@ -20,9 +20,6 @@ variable "APP_VERSION" {
   default = "${BUILD_DATE}-${BUILD_ID}"
 }
 
-target "test" {
-  target = "test"
-}
 target "build" {
   target = "build"
   args = {

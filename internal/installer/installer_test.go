@@ -35,11 +35,11 @@ func TestSpecFor(t *testing.T) {
 func TestSpecMirrorsCompose(t *testing.T) {
 	data, err := os.ReadFile("../../docker-compose.yaml")
 	if errors.Is(err, os.ErrNotExist) {
-		// The reference compose file is deliberately excluded from the Docker
-		// build context (.dockerignore), so this drift guard cannot run inside
-		// the image build's test stage. It runs in local dev and the `test` CI
-		// job, where the full checkout is present.
-		t.Skip("docker-compose.yaml not in context (excluded by .dockerignore)")
+		// The reference compose file lives at the repo root; when the package is
+		// tested from a context that does not include it, skip rather than fail.
+		// The drift guard runs wherever the full checkout is present (local dev
+		// and the `test` CI job).
+		t.Skip("docker-compose.yaml not found; skipping drift guard")
 	}
 	require.NoError(t, err)
 

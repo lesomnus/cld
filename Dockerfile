@@ -12,15 +12,9 @@ RUN go mod download
 COPY . .
 ENV CGO_ENABLED=0
 
-
-
-FROM base AS test
-
-# A build stage has no Docker daemon, so run only the unit tests here: -short
-# skips the integration tests (guarded by require_docker), which need one. The
-# full suite runs in the `test` CI job on a runner that has Docker.
-RUN --mount=type=cache,target=/root/.cache/go-build \
-	go test -short -v -trimpath ./...
+# Tests are not run here: a build stage has no Docker daemon, so the
+# integration suite could only skip. The `test` CI job runs the full suite on a
+# runner that has Docker; this image only compiles the binary.
 
 
 

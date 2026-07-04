@@ -48,6 +48,7 @@ jobs:
         run: go test -trimpath -timeout 15m ./...
 
   build:
+    needs: test
     runs-on: ubuntu-latest
     env:
       TAG: edge
@@ -62,7 +63,7 @@ jobs:
         uses: docker/bake-action@v7
         with:
           source: .
-          targets: test,build
+          targets: build
           set: |
             *.platform=linux/amd64
             *.cache-from=type=gha
