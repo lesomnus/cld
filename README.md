@@ -68,8 +68,9 @@ install the devcontainer CLI or Node on your host.)
 
 `cld down <name>` is the inverse: it takes a final backup, then stops and
 removes the devcontainer — for a Compose-based devcontainer the whole project
-(the dev service plus sidecars) is removed. Named volumes and the host-side
-conversation backup are kept, so `cld up` later restores the history.
+(the dev service plus sidecars) is removed, except a sidecar you've marked
+`cld.ignore`. Named volumes and the host-side conversation backup are kept, so
+`cld up` later restores the history.
 
 The host needs no tmux for this: `cld it` asks the daemon where its tmux server
 lives and, when the daemon runs in a container, attaches through a `docker
@@ -134,6 +135,7 @@ keeps running; reopen (or `cld it myapp` from the host) to pick it back up.
 | See what's running                  | `cld ls`                                           |
 | Recover after exiting claude        | `cld it --new <name>`                              |
 | Remove a devcontainer               | `cld down <name>` (keeps the conversation backup)  |
+| Remove every devcontainer cld manages | `cld down --all` (skips `cld.ignore` / non-cld)  |
 
 Things that just work — nothing for you to do:
 
@@ -201,9 +203,15 @@ day in `cld up`/`cld it`/`cld ls`/`cld down`.
   `stopped` / `failed`), and claude `VERSION`. Use it to see what's running and
   to get the names for `cld it`/`cld down`.
 - **`cld down <name>`** — take a final backup, then stop and remove the
-  devcontainer (for a Compose devcontainer, the whole project). Named volumes
-  and the host-side conversation backup are kept, so `cld up` later resumes the
-  history. Use it to tear a project down without losing its conversation.
+  devcontainer (for a Compose devcontainer, the whole project, minus any sidecar
+  marked `cld.ignore`). Named volumes and the host-side conversation backup are
+  kept, so `cld up` later resumes the history. Use it to tear a project down
+  without losing its conversation.
+  **`cld down --all`** does this for every devcontainer cld manages at once
+  (prompting first; `-y`/`--yes` skips it). It only ever touches what cld
+  provisioned: before removing each container the daemon re-checks it against the
+  same gate, so a container labelled `cld.ignore=true`, one matched by an
+  `ignore:` glob, or any non-devcontainer is left alone.
 
 ### Recover / inspect
 

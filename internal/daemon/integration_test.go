@@ -146,6 +146,39 @@ func run_devcontainer(t *testing.T, cli *client.Client, local_folder string) str
 	return id
 }
 
+// run_container_labeled creates and starts a container with the given labels,
+// binding local_folder to /workspace when it is non-empty. It stands up
+// containers cld should leave alone: a devcontainer marked cld.ignore, or a
+// plain container that carries no devcontainer label at all.
+func run_container_labeled(t *testing.T, cli *client.Client, local_folder string, labels map[string]string) string {
+	t.Helper()
+
+	host := &container.HostConfig{}
+	if local_folder != "" {
+		host.Binds = []string{local_folder + ":/workspace"}
+	}
+	created, err := cli.ContainerCreate(t.Context(), client.ContainerCreateOptions{
+		Config: &container.Config{
+			Image:  test_image,
+			Cmd:    []string{"sleep", "2147483647"},
+			Labels: labels,
+		},
+		HostConfig: host,
+	})
+	require.NoError(t, err)
+
+	id := created.ID
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		cli.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true})
+	})
+
+	_, err = cli.ContainerStart(t.Context(), id, client.ContainerStartOptions{})
+	require.NoError(t, err)
+	return id
+}
+
 func wait_for(t *testing.T, timeout time.Duration, what string, fn func() bool) {
 	t.Helper()
 

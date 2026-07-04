@@ -248,7 +248,10 @@ can — i.e. with a containerized daemon.
   on the daemon side (the container id the relay serves), never supplied by the
   container, so untrusted code in one project cannot enumerate, attach to,
   recreate, or destroy another project's session. This matters because managed
-  containers run agent-driven, potentially untrusted repository content.
+  containers run agent-driven, potentially untrusted repository content. The
+  fleet-wide `/down/all` (behind `cld down --all`) is deliberately absent from
+  the scoped API — only the host-side control plane exposes it — so a managed
+  container cannot tear the whole fleet down.
 - **Opt-out.** `auth.remote_control: false` disables the relay entirely
   (`RemoteControlEnabled`), symmetric to `forward_agent` for the ssh-agent
   relay. It is on by default.

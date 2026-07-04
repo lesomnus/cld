@@ -311,6 +311,19 @@ func (d *Daemon) lookup(id string) *entry {
 	return d.entries[id]
 }
 
+// is_tracked reports whether e is still the daemon's current entry for its id.
+// It fails once d.remove(e) has dropped it — e.g. after ensure decides the
+// container is ignored, or a destroy retired it — even though a task posted
+// earlier still holds the pointer. down --all uses it as a cheap early-out for
+// an already-retired entry; the authoritative scope check is a live re-inspect
+// (managed_devcontainer), since a still-tracked entry may just not have been
+// classified yet.
+func (d *Daemon) is_tracked(e *entry) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.entries[e.id] == e
+}
+
 // get_or_create returns the entry for id, starting its worker on first sight.
 func (d *Daemon) get_or_create(id string) *entry {
 	d.mu.Lock()

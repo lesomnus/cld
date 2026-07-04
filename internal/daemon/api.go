@@ -10,6 +10,7 @@ import (
 	"net/http"
 	urlpkg "net/url"
 	"os"
+	"sort"
 	"strconv"
 	"time"
 )
@@ -42,6 +43,7 @@ func (d *Daemon) api() http.Handler {
 	mux.HandleFunc("POST /notify/exited", d.handle_notify_exited)
 	mux.HandleFunc("POST /session/new", d.handle_session_new)
 	mux.HandleFunc("POST /down", d.handle_down)
+	mux.HandleFunc("POST /down/all", d.handle_down_all)
 	return mux
 }
 
@@ -219,6 +221,91 @@ func (d *Daemon) handle_down(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// DownResult is the per-devcontainer outcome of a `cld down --all`.
+type DownResult struct {
+	Name  string `json:"name"`
+	ID    string `json:"id"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+}
+
+// handle_down_all stops and removes every devcontainer cld manages. It fans the
+// daemon's tracked entries out to their own workers, so removals run
+// concurrently and each takes its final backup before Docker drops the
+// container; the per-container outcomes are gathered into the response. It is
+// only on the full control plane, never the in-container scoped_api — a managed
+// container must not be able to tear the whole fleet down. Backs `cld down
+// --all`.
+//
+// The tracked set is only a hint: an entry exists for every started container
+// and is declassified as ignored/non-devcontainer only later by ensure (and a
+// container that was not running when ensure inspected it is never classified at
+// all). So the removal decision is made authoritatively on the worker, against
+// the live container: managed_devcontainer re-applies ensure's label/ignore
+// gate, and is_tracked drops an entry ensure has since retired. Only entries
+// that pass both are removed and reported; anything else is left untouched and
+// omitted, so a not-yet-classified or leaked entry for a cld.ignore or plain
+// container is never destroyed.
+func (d *Daemon) handle_down_all(w http.ResponseWriter, r *http.Request) {
+	d.mu.Lock()
+	entries := make([]*entry, 0, len(d.entries))
+	for _, e := range d.entries {
+		entries = append(entries, e)
+	}
+	d.mu.Unlock()
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].snapshot().Name < entries[j].snapshot().Name
+	})
+
+	type outcome struct {
+		attempted bool
+		err       error
+	}
+	type pending struct {
+		id   string
+		name string
+		done chan outcome
+	}
+	pends := make([]pending, 0, len(entries))
+	for _, e := range entries {
+		done := make(chan outcome, 1)
+		// Runs on the worker, after any ensure already queued for this entry.
+		posted := e.mbox.post(func() {
+			if !d.is_tracked(e) || !d.managed_devcontainer(d.base_ctx, e.id) {
+				done <- outcome{attempted: false}
+				return
+			}
+			done <- outcome{attempted: true, err: d.down(d.base_ctx, e)}
+		})
+		// A worker whose mailbox is already closed (its container was torn down
+		// concurrently) is effectively already removed; skip it silently.
+		if !posted {
+			continue
+		}
+		pends = append(pends, pending{id: e.id, name: e.snapshot().Name, done: done})
+	}
+
+	results := make([]DownResult, 0, len(pends))
+	for _, p := range pends {
+		oc := <-p.done
+		// A container left alone (no longer tracked, or not a cld-managed
+		// devcontainer) is not reported as removed.
+		if !oc.attempted {
+			continue
+		}
+		res := DownResult{Name: p.name, ID: short(p.id)}
+		if oc.err != nil {
+			res.Error = oc.err.Error()
+		} else {
+			res.OK = true
+		}
+		results = append(results, res)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"results": results})
+}
+
 // by_name finds a tracked entry by its display name.
 func (d *Daemon) by_name(name string) *entry {
 	d.mu.Lock()
@@ -339,6 +426,39 @@ func RecreateSession(ctx context.Context, socket string, name string) error {
 		return fmt.Errorf("daemon: %s: %s", res.Status, string(body))
 	}
 	return nil
+}
+
+// DownAll asks the daemon to stop and remove every devcontainer it manages,
+// returning the per-container outcome. Containers cld does not manage — those
+// without the devcontainer label, or excluded by the cld.ignore label or an
+// ignore glob — are never tracked by the daemon, so they are never touched. It
+// allows a generous timeout because each removal takes a final backup and a
+// Compose teardown can be slow, and several run at once.
+func DownAll(ctx context.Context, socket string) ([]DownResult, error) {
+	hc := NewSocketClient(socket)
+	hc.Timeout = 10 * time.Minute
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://cld/down/all", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	res, err := hc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("is `cld serve` running? %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 512))
+		return nil, fmt.Errorf("daemon: %s: %s", res.Status, string(body))
+	}
+
+	var body struct {
+		Results []DownResult `json:"results"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		return nil, err
+	}
+	return body.Results, nil
 }
 
 // Down asks the daemon to stop and remove a devcontainer. The daemon takes a
