@@ -106,25 +106,38 @@ func fake_release(t *testing.T, version string, binary []byte) *httptest.Server 
 
 func pull_image(t *testing.T, cli *client.Client) {
 	t.Helper()
+	pull_ref(t, cli, test_image)
+}
 
-	res, err := cli.ImagePull(t.Context(), test_image, client.ImagePullOptions{})
+func pull_ref(t *testing.T, cli *client.Client, ref string) {
+	t.Helper()
+
+	res, err := cli.ImagePull(t.Context(), ref, client.ImagePullOptions{})
 	require.NoError(t, err)
 	defer res.Close()
 	io.Copy(io.Discard, res)
 }
 
-// run_devcontainer creates and starts a fake devcontainer on the engine.
+// run_devcontainer creates and starts a fake devcontainer on the engine, run as
+// root.
 func run_devcontainer(t *testing.T, cli *client.Client, local_folder string) string {
+	return run_devcontainer_as(t, cli, local_folder, test_image, "root")
+}
+
+// run_devcontainer_as is run_devcontainer with a chosen image and remoteUser,
+// so a test can exercise a non-root container user — the realistic devcontainer
+// case, and the only one that surfaces config-tree ownership bugs.
+func run_devcontainer_as(t *testing.T, cli *client.Client, local_folder, image, remoteUser string) string {
 	t.Helper()
 
 	created, err := cli.ContainerCreate(t.Context(), client.ContainerCreateOptions{
 		Config: &container.Config{
-			Image: test_image,
+			Image: image,
 			Cmd:   []string{"sleep", "2147483647"},
 			Labels: map[string]string{
 				devc.LabelLocalFolder: local_folder,
 				devc.LabelConfigFile:  filepath.Join(local_folder, ".devcontainer", "devcontainer.json"),
-				devc.LabelMetadata:    `[{"remoteUser":"root"}]`,
+				devc.LabelMetadata:    fmt.Sprintf(`[{"remoteUser":%q}]`, remoteUser),
 			},
 		},
 		HostConfig: &container.HostConfig{

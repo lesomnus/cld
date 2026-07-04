@@ -476,6 +476,24 @@ func (d *Daemon) prepare_state(ctx context.Context, e *entry, id string) error {
 	if err := d.seed_file(ctx, e, id, "settings.json", 0o644, claude.SeedSettings); err != nil {
 		return fmt.Errorf("seed settings: %w", err)
 	}
+
+	// Own the whole config tree to the container user. docker cp (which restore
+	// and every WriteFile use) applies the tar's uid/gid only to entries it
+	// names explicitly; any intermediate directory it has to create — projects/,
+	// projects/<enc>/, file-history/ — it makes root-owned. claude runs as the
+	// unprivileged user, so a root-owned projects/<enc>/ lets it resume (read)
+	// but not create a new conversation's transcript (write), which shows up as
+	// claude dying the moment you start a new conversation. Normalizing here
+	// covers every current and future docker-cp path, not just the ones we know.
+	out, code, err = dockerx.ExecOutput(ctx, d.cli, id, "0", []string{
+		"chown", "-R", fmt.Sprintf("%d:%d", e.uid, e.gid), e.cfg_dir,
+	})
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		return fmt.Errorf("chown config dir: exit %d: %s", code, out)
+	}
 	return nil
 }
 
