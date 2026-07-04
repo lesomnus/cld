@@ -1,6 +1,7 @@
 package installer
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -33,6 +34,13 @@ func TestSpecFor(t *testing.T) {
 // $HOME and uid are templated in compose, so only structure is compared).
 func TestSpecMirrorsCompose(t *testing.T) {
 	data, err := os.ReadFile("../../docker-compose.yaml")
+	if errors.Is(err, os.ErrNotExist) {
+		// The reference compose file is deliberately excluded from the Docker
+		// build context (.dockerignore), so this drift guard cannot run inside
+		// the image build's test stage. It runs in local dev and the `test` CI
+		// job, where the full checkout is present.
+		t.Skip("docker-compose.yaml not in context (excluded by .dockerignore)")
+	}
 	require.NoError(t, err)
 
 	var cf struct {
