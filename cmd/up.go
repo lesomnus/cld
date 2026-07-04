@@ -38,11 +38,6 @@ func NewCmdUp() *xli.Command {
 			if err != nil {
 				return err
 			}
-			if !devcup.HasConfig(workspace) {
-				return fmt.Errorf("no devcontainer configuration in %s"+
-					" (expected .devcontainer/devcontainer.json or .devcontainer.json)", workspace)
-			}
-
 			extra, _ := arg.Get[[]string](cmd, "args")
 			o := devcup.Options{
 				Workspace:   workspace,
@@ -50,6 +45,21 @@ func NewCmdUp() *xli.Command {
 				RunnerImage: c.Up.Image,
 				Stdout:      cmd,
 				Stderr:      cmd.ErrWriter,
+			}
+
+			// A workspace without its own config is provisioned from a built-in
+			// minimal default named after the directory, written to a temp file
+			// and passed via --override-config so the workspace is left untouched.
+			if !devcup.HasConfig(workspace) {
+				p, cleanup, err := devcup.WriteDefaultConfig(workspace)
+				if err != nil {
+					return z.Err(err, "prepare default devcontainer config")
+				}
+				defer cleanup()
+				o.OverrideConfig = p
+				fmt.Fprintf(cmd.ErrWriter,
+					"cld: no devcontainer config in %s; using built-in default (name=%s)\n",
+					workspace, filepath.Base(workspace))
 			}
 
 			cli, err := client.New(client.FromEnv)

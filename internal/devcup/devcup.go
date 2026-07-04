@@ -19,6 +19,10 @@ type Options struct {
 	Args []string
 	// RunnerImage runs the CLI when neither `devcontainer` nor `npx` exists.
 	RunnerImage string
+	// OverrideConfig is the host path of a devcontainer.json to use instead of
+	// any in the workspace, passed via `--override-config`. Empty means the CLI
+	// reads the workspace's own config.
+	OverrideConfig string
 
 	Stdout io.Writer
 	Stderr io.Writer
@@ -26,6 +30,18 @@ type Options struct {
 
 func (o *Options) up_args() []string {
 	return append([]string{"up", "--workspace-folder", o.Workspace}, o.Args...)
+}
+
+// up_args_with is up_args plus a --override-config pointing at config_path, or
+// just up_args when config_path is empty. The path differs between host runners
+// (a host path) and the containerized runner (an in-container path), so callers
+// pass it explicitly rather than reading OverrideConfig here.
+func (o *Options) up_args_with(config_path string) []string {
+	args := o.up_args()
+	if config_path != "" {
+		args = append(args, "--override-config", config_path)
+	}
+	return args
 }
 
 // HasConfig reports whether the workspace has a devcontainer configuration at
@@ -59,7 +75,7 @@ func Resolve(o Options, look_path func(string) (string, error), containerized fu
 		return Runner{
 			Desc: "devcontainer CLI at " + p,
 			Run: func(ctx context.Context) error {
-				return run_command(ctx, o, p, o.up_args()...)
+				return run_command(ctx, o, p, o.up_args_with(o.OverrideConfig)...)
 			},
 		}
 	}
@@ -67,7 +83,7 @@ func Resolve(o Options, look_path func(string) (string, error), containerized fu
 		return Runner{
 			Desc: "npx @devcontainers/cli (downloads on first use)",
 			Run: func(ctx context.Context) error {
-				args := append([]string{"--yes", "@devcontainers/cli"}, o.up_args()...)
+				args := append([]string{"--yes", "@devcontainers/cli"}, o.up_args_with(o.OverrideConfig)...)
 				return run_command(ctx, o, p, args...)
 			},
 		}
