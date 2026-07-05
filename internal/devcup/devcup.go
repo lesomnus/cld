@@ -17,7 +17,7 @@ type Options struct {
 	Workspace string
 	// Args are extra arguments appended to `devcontainer up`.
 	Args []string
-	// RunnerImage runs the CLI when neither `devcontainer` nor `npx` exists.
+	// RunnerImage runs the CLI when no `devcontainer` binary is on the host.
 	RunnerImage string
 	// OverrideConfig is the host path of a devcontainer.json to use instead of
 	// any in the workspace, passed via `--override-config`. Empty means the CLI
@@ -67,24 +67,14 @@ type Runner struct {
 	Run  func(ctx context.Context) error
 }
 
-// Resolve picks how to run the CLI: a devcontainer binary on PATH, then npx
-// (which downloads the CLI from npm on first use), then the runner image.
-// look_path is a parameter for tests; pass exec.LookPath.
+// Resolve picks how to run the CLI: a devcontainer binary on PATH, else the
+// runner image. look_path is a parameter for tests; pass exec.LookPath.
 func Resolve(o Options, look_path func(string) (string, error), containerized func(ctx context.Context) error) Runner {
 	if p, err := look_path("devcontainer"); err == nil {
 		return Runner{
 			Desc: "devcontainer CLI at " + p,
 			Run: func(ctx context.Context) error {
 				return run_command(ctx, o, p, o.up_args_with(o.OverrideConfig)...)
-			},
-		}
-	}
-	if p, err := look_path("npx"); err == nil {
-		return Runner{
-			Desc: "npx @devcontainers/cli (downloads on first use)",
-			Run: func(ctx context.Context) error {
-				args := append([]string{"--yes", "@devcontainers/cli"}, o.up_args_with(o.OverrideConfig)...)
-				return run_command(ctx, o, p, args...)
 			},
 		}
 	}

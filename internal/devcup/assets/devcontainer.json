@@ -1,3 +1,5 @@
 {
-  "image": "ghcr.io/lesomnus/ubuntu:26"
+  "image": "ghcr.io/lesomnus/ubuntu:26",
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind"
 }

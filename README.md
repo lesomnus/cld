@@ -59,12 +59,12 @@ attaches when it's ready:
 $ cld up ~/src/myapp          # or `cld up` in the project directory
 ```
 
-It runs the official `devcontainer up` — using a `devcontainer` binary or
-`npx` on your host if present, otherwise a containerized copy of the CLI
+It runs the official `devcontainer up` — using a `devcontainer` binary on your
+host if present, otherwise a containerized copy of the CLI
 (`ghcr.io/lesomnus/cld:runner`, pulled on first use) so Docker is the only
 requirement. Extra flags pass through: `cld up . -- --remove-existing-container`.
 (The containerized runner needs a local engine; with a remote `DOCKER_HOST`,
-install the devcontainer CLI or Node on your host.)
+install the devcontainer CLI on your host.)
 
 `cld down <name>` is the inverse: it takes a final backup, then stops and
 removes the devcontainer — for a Compose-based devcontainer the whole project
@@ -189,7 +189,7 @@ day in `cld up`/`cld it`/`cld ls`/`cld down`.
 
 - **`cld up [path] [-- extra…]`** — create/start the devcontainer for a project
   and attach when its claude session is ready (`path` defaults to the current
-  directory). Runs the official `devcontainer up` (using a `devcontainer`/`npx`
+  directory). Runs the official `devcontainer up` (using a `devcontainer`
   on your host, else a containerized copy). `--no-attach` provisions without
   attaching; extra args after `--` pass through to `devcontainer up`. Use it to
   start working on a project.

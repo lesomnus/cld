@@ -35,7 +35,7 @@ docker event를 listen해서 devcontainer가 뜨면, 호스트에 캐시해둔 c
 `cld up [경로]`는 devcontainer를 만들고/켜고, 데몬이 프로비저닝을 마치면 attach까지 한다.
 
 - **devcontainer 생성은 공식 devcontainer CLI를 감싼다** — 스펙(features·이미지 빌드·lifecycle·변수 치환) 재구현은 devpod급이라 안 함. 감지가 공식 CLI 라벨에 의존하므로 재구현은 어긋날 위험만 큼.
-- **러너 선택 캐스케이드**: 호스트 PATH의 `devcontainer` → `npx @devcontainers/cli`(npm에서 최초 1회 다운로드) → 컨테이너화된 CLI(`cld.yaml`의 `up.image`, 기본 `ghcr.io/lesomnus/cld:runner`). CLI가 npm 전용(정적 바이너리·공식 이미지 없음)이라 러너 이미지를 우리가 배포(node + @devcontainers/cli + docker CLI).
+- **러너 선택 캐스케이드**: 호스트 PATH의 `devcontainer` → 컨테이너화된 CLI(`cld.yaml`의 `up.image`, 기본 `ghcr.io/lesomnus/cld:runner`). CLI가 npm 전용(정적 바이너리·공식 이미지 없음)이라 러너 이미지를 우리가 배포(node + @devcontainers/cli + docker CLI).
 - **컨테이너 러너 실행**: 워크스페이스를 **호스트와 동일 경로**로 마운트(CLI가 라벨에 기록하는 경로가 호스트와 일치해야 데몬 감지가 맞음), 소켓 bind, `HOME` 전달(`${localEnv:HOME}` 치환용). 이미지 pull 실패는 스트림의 에러를 surface. 출력 스트리밍, 종료코드 전파.
   - **원격 엔진 거부**: `DOCKER_HOST`가 tcp면 러너 컨테이너가 로컬 워크스페이스를 못 보므로(bind가 원격 호스트에서 빈 디렉터리로 생성됨), 컨테이너 러너를 조용히 쓰지 않고 "로컬 엔진(unix 소켓)이 필요하다, CLI/Node를 호스트에 설치하라"고 명확히 실패. 로컬 unix 소켓일 때만 컨테이너 러너 사용.
 - up 이후 데몬 `/items`를 폴링해 그 `local_folder`가 ready가 되면 `it`의 attach 경로 재사용.

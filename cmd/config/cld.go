@@ -69,8 +69,8 @@ func (c AuthConfig) RemoteControlEnabled() bool {
 }
 
 type UpConfig struct {
-	// Image used to run the devcontainer CLI when neither `devcontainer` nor
-	// `npx` is available on the host.
+	// Image used to run the devcontainer CLI when no `devcontainer` binary is
+	// available on the host.
 	Image string `yaml:"image"`
 }
 

@@ -42,16 +42,6 @@ func TestResolve(t *testing.T) {
 		r := Resolve(o, look, containerized)
 		require.Contains(t, r.Desc, "/usr/bin/devcontainer")
 	})
-	t.Run("falls back to npx", func(t *testing.T) {
-		look := func(name string) (string, error) {
-			if name == "npx" {
-				return "/usr/bin/npx", nil
-			}
-			return "", errors.New("not found")
-		}
-		r := Resolve(o, look, containerized)
-		require.Contains(t, r.Desc, "npx")
-	})
 	t.Run("falls back to the runner image", func(t *testing.T) {
 		look := func(string) (string, error) { return "", errors.New("not found") }
 		r := Resolve(o, look, containerized)
