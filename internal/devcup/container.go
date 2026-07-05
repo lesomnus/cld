@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/moby/moby/api/pkg/stdcopy"
@@ -54,22 +53,16 @@ func RunContainerized(ctx context.Context, cli *client.Client, o Options) error 
 		env = append(env, "HOME="+h)
 	}
 
+	// The workspace is bind-mounted at its host path, so a built-in default
+	// written into it at .devcontainer/devcontainer.json is visible to the CLI
+	// here just as it is on the host — no separate override mount needed.
 	binds := []string{o.Workspace + ":" + o.Workspace, access.Bind}
-
-	// An ephemeral override config lives outside the workspace, so bind its dir
-	// into the runner and point --override-config at the in-container path.
-	cmd := o.up_args()
-	if o.OverrideConfig != "" {
-		const inside = "/cld/devcontainer.json"
-		binds = append(binds, filepath.Dir(o.OverrideConfig)+":/cld:ro")
-		cmd = o.up_args_with(inside)
-	}
 
 	created, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Config: &container.Config{
 			Image:      o.RunnerImage,
 			Entrypoint: []string{"devcontainer"},
-			Cmd:        cmd,
+			Cmd:        o.up_args(),
 			Env:        env,
 			WorkingDir: o.Workspace,
 		},

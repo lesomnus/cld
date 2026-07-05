@@ -48,18 +48,20 @@ func NewCmdUp() *xli.Command {
 			}
 
 			// A workspace without its own config is provisioned from a built-in
-			// minimal default named after the directory, written to a temp file
-			// and passed via --override-config so the workspace is left untouched.
+			// minimal default named after the directory, written into the
+			// workspace at .devcontainer/devcontainer.json (best-effort
+			// git-excluded). Writing a real file — rather than an ephemeral
+			// --override-config — means the devcontainer.config_file label points
+			// at a path the CLI, VS Code, and the daemon can all read back, so
+			// the container is openable in VS Code.
 			if !devcup.HasConfig(workspace) {
-				p, cleanup, err := devcup.WriteDefaultConfig(workspace)
+				p, err := devcup.WriteDefaultConfig(workspace)
 				if err != nil {
 					return z.Err(err, "prepare default devcontainer config")
 				}
-				defer cleanup()
-				o.OverrideConfig = p
 				fmt.Fprintf(cmd.ErrWriter,
-					"cld: no devcontainer config in %s; using built-in default (name=%s)\n",
-					workspace, filepath.Base(workspace))
+					"cld: no devcontainer config in %s; wrote built-in default to %s (name=%s)\n",
+					workspace, p, filepath.Base(workspace))
 			}
 
 			cli, err := client.New(client.FromEnv)

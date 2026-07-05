@@ -13,9 +13,14 @@ func TestWriteDefaultConfig(t *testing.T) {
 	ws := filepath.Join(t.TempDir(), "my-project")
 	require.NoError(t, os.MkdirAll(ws, 0o755))
 
-	p, cleanup, err := WriteDefaultConfig(ws)
+	p, err := WriteDefaultConfig(ws)
 	require.NoError(t, err)
-	require.NotEmpty(t, p)
+
+	// The config is materialized inside the workspace at the standard location,
+	// so the devcontainer.config_file label points at a real, host-readable
+	// file that VS Code re-reads on open.
+	require.Equal(t, filepath.Join(ws, ".devcontainer", "devcontainer.json"), p)
+	require.True(t, HasConfig(ws), "the workspace now has a config")
 
 	b, err := os.ReadFile(p)
 	require.NoError(t, err)
@@ -24,24 +29,25 @@ func TestWriteDefaultConfig(t *testing.T) {
 	require.NoError(t, json.Unmarshal(b, &m))
 	require.Equal(t, "my-project", m["name"], "name is the workspace basename")
 	require.NotEmpty(t, m["image"], "the built-in default carries an image")
-
-	require.NotEqual(t, ws, filepath.Dir(p), "config is written outside the workspace")
-
-	cleanup()
-	_, err = os.Stat(p)
-	require.True(t, os.IsNotExist(err), "cleanup removes the temp config")
 }
 
-func TestUpArgsWith(t *testing.T) {
-	o := Options{Workspace: "/w"}
+func TestWriteDefaultConfigGitExclude(t *testing.T) {
+	ws := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(ws, ".git"), 0o755))
 
-	t.Run("appends override-config", func(t *testing.T) {
-		args := o.up_args_with("/x/devcontainer.json")
-		require.Equal(t,
-			[]string{"up", "--workspace-folder", "/w", "--override-config", "/x/devcontainer.json"},
-			args)
-	})
-	t.Run("empty path is a no-op", func(t *testing.T) {
-		require.Equal(t, o.up_args(), o.up_args_with(""))
-	})
+	_, err := WriteDefaultConfig(ws)
+	require.NoError(t, err)
+
+	excl := filepath.Join(ws, ".git", "info", "exclude")
+	b, err := os.ReadFile(excl)
+	require.NoError(t, err)
+	require.Contains(t, string(b), ".devcontainer/devcontainer.json",
+		"the generated config is git-excluded so it does not dirty status")
+
+	// Idempotent: a second write must not duplicate the exclude entry.
+	_, err = WriteDefaultConfig(ws)
+	require.NoError(t, err)
+	b2, err := os.ReadFile(excl)
+	require.NoError(t, err)
+	require.Equal(t, string(b), string(b2), "exclude entry is not duplicated")
 }
