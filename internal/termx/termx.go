@@ -5,6 +5,7 @@ package termx
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"os/signal"
@@ -13,6 +14,19 @@ import (
 	"github.com/moby/moby/client"
 	"golang.org/x/term"
 )
+
+// SetTitle sets the terminal's window and icon title via an OSC 0 escape,
+// but only when stdout is a terminal, so the sequence never leaks into piped
+// or captured output. cld sets it to the devcontainer name before handing the
+// terminal to an attach, so several `cld it` windows are told apart by title.
+// The shell resets the title from its prompt once cld exits, so there is
+// nothing to restore.
+func SetTitle(title string) {
+	if !term.IsTerminal(int(os.Stdout.Fd())) {
+		return
+	}
+	fmt.Fprintf(os.Stdout, "\033]0;%s\a", title)
+}
 
 type ExecOptions struct {
 	Container  string

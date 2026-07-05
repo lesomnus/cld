@@ -51,6 +51,11 @@ func NewCmdIt() *xli.Command {
 			}
 			session := devc.SessionName(name)
 
+			// Name this window after the devcontainer so multiple `cld it`
+			// windows are distinguishable. The daemon's tmux runs with
+			// set-titles off, so it leaves this outer title alone.
+			termx.SetTitle(name)
+
 			if v, _ := flg.Get[bool](cmd, "new"); v {
 				if err := daemon.RecreateSession(ctx, c.SocketPath(), name); err != nil {
 					return err
