@@ -22,13 +22,13 @@ func NewCmdLs() *xli.Command {
 			}
 
 			w := tabwriter.NewWriter(cmd, 2, 8, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tALIAS\tCONTAINER\tSTATUS\tVERSION")
+			fmt.Fprintln(w, "NAME\tALIAS\tCONTAINER\tSTATUS\tVERSION\tLOCAL FOLDER")
 			for _, it := range items {
 				id := it.ID
 				if len(id) > 12 {
 					id = id[:12]
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", it.Name, it.Alias, id, it.Status, it.Version)
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", it.Name, it.Alias, id, it.Status, it.Version, it.LocalFolder)
 			}
 			return w.Flush()
 		}),
