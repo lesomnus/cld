@@ -58,6 +58,52 @@ func TestSlug(t *testing.T) {
 	})
 }
 
+func TestAlias(t *testing.T) {
+	t.Run("short name is its own alias", func(t *testing.T) {
+		require.Equal(t, "cld", devc.Alias("cld"))
+		require.Equal(t, "webapi", devc.Alias("webapi"))
+	})
+	t.Run("multi-word name becomes its initials", func(t *testing.T) {
+		require.Equal(t, "mwa", devc.Alias("my-web-app"))
+		require.Equal(t, "op", devc.Alias("observability-platform"))
+		require.Equal(t, "svlt", devc.Alias("some_very_long_thing"))
+	})
+	t.Run("long single word is truncated", func(t *testing.T) {
+		require.Equal(t, "really", devc.Alias("reallylongsingleword"))
+	})
+	t.Run("lowercased and slugged", func(t *testing.T) {
+		require.Equal(t, "op", devc.Alias("Observability/Platform"))
+	})
+	t.Run("empty when nothing survives", func(t *testing.T) {
+		require.Equal(t, "", devc.Alias("///"))
+	})
+}
+
+func TestFingerprint(t *testing.T) {
+	t.Run("deterministic and non-empty", func(t *testing.T) {
+		a := devc.Fingerprint("/home/me/work/cld")
+		require.Equal(t, a, devc.Fingerprint("/home/me/work/cld"))
+		require.NotEmpty(t, a)
+	})
+	t.Run("different seeds differ", func(t *testing.T) {
+		require.NotEqual(t,
+			devc.Fingerprint("/home/me/work/cld"),
+			devc.Fingerprint("/home/me/other/cld"),
+		)
+	})
+	t.Run("only crockford-lower characters", func(t *testing.T) {
+		fp := devc.Fingerprint("/some/path")
+		require.NotEmpty(t, fp)
+		for _, r := range fp {
+			require.Contains(t, "0123456789abcdefghjkmnpqrstvwxyz", string(r))
+		}
+	})
+	t.Run("empty seed still yields a valid digest", func(t *testing.T) {
+		// FNV-1a of "" is the nonzero offset basis, so this is a normal digest.
+		require.NotEmpty(t, devc.Fingerprint(""))
+	})
+}
+
 func TestRemoteUser(t *testing.T) {
 	t.Run("last remoteUser wins", func(t *testing.T) {
 		v := devc.RemoteUser(`[{"remoteUser":"root"},{"foo":1},{"remoteUser":"vscode"}]`)

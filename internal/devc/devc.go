@@ -5,6 +5,7 @@ package devc
 
 import (
 	"encoding/json"
+	"hash/fnv"
 	"path/filepath"
 	"strings"
 )
@@ -72,6 +73,69 @@ func Slug(name string) string {
 func SessionName(name string) string {
 	r := strings.NewReplacer(".", "_", ":", "_")
 	return "cld-" + r.Replace(name)
+}
+
+// aliasShort is the length at or below which a name is already terse enough to
+// serve as its own alias, and the length a longer single word is truncated to.
+const aliasShort = 6
+
+// Alias derives a short, readable handle from a display name: the name itself
+// when it is already short, the initials of its segments when it is a
+// multi-word name (split on "-", "_", "."), or a truncation of a long single
+// word otherwise. The result is lowercased and slug-safe. It is deterministic
+// — the same name always yields the same alias — and is NOT unique on its own;
+// callers disambiguate collisions with Fingerprint. Returns "" for a name that
+// slugs to nothing.
+func Alias(name string) string {
+	s := strings.ToLower(Slug(name))
+	if s == "" {
+		return ""
+	}
+	if len(s) <= aliasShort {
+		return s
+	}
+
+	segs := strings.FieldsFunc(s, func(r rune) bool {
+		return r == '-' || r == '_' || r == '.'
+	})
+	if len(segs) >= 2 {
+		var b strings.Builder
+		for _, seg := range segs {
+			b.WriteByte(seg[0]) // FieldsFunc never yields empty fields
+		}
+		if init := b.String(); len(init) >= 2 {
+			return init
+		}
+	}
+	return s[:aliasShort]
+}
+
+// crockfordLower is Crockford's base32 alphabet in lowercase: the digits and
+// letters minus i, l, o, u, so a fingerprint never reads as an ambiguous or
+// unintended word.
+const crockfordLower = "0123456789abcdefghjkmnpqrstvwxyz"
+
+// Fingerprint returns a short, stable, lowercase base32 (Crockford) digest of
+// seed. It is deterministic — the same seed always yields the same digits, with
+// no randomness — so it disambiguates colliding aliases while staying derived
+// from the container's identity. High-order digits come first, so a prefix of
+// the result still spreads well. Returns "0" for an empty seed.
+func Fingerprint(seed string) string {
+	h := fnv.New64a()
+	h.Write([]byte(seed))
+	v := h.Sum64()
+
+	var b [13]byte // ceil(64 / 5) = 13 base32 digits
+	n := len(b)
+	for v > 0 {
+		n--
+		b[n] = crockfordLower[v&0x1f]
+		v >>= 5
+	}
+	if n == len(b) {
+		return "0"
+	}
+	return string(b[n:])
 }
 
 // RemoteUser extracts the effective user from the devcontainer.metadata label.

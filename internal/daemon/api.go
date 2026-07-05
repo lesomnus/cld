@@ -306,7 +306,10 @@ func (d *Daemon) handle_down_all(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"results": results})
 }
 
-// by_name finds a tracked entry by its display name.
+// by_name finds a tracked entry by its display name or its short alias. A
+// display-name match wins over an alias match, so the handle a user sees under
+// NAME always resolves to that same container even if it happens to equal
+// another container's alias.
 func (d *Daemon) by_name(name string) *entry {
 	d.mu.Lock()
 	entries := make([]*entry, 0, len(d.entries))
@@ -317,6 +320,11 @@ func (d *Daemon) by_name(name string) *entry {
 
 	for _, e := range entries {
 		if e.snapshot().Name == name {
+			return e
+		}
+	}
+	for _, e := range entries {
+		if e.snapshot().Alias == name {
 			return e
 		}
 	}

@@ -115,6 +115,9 @@ func (d *Daemon) ensure_(ctx context.Context, e *entry) error {
 			display = "devcontainer"
 		}
 		e.item.Name = d.unique_name(id, display)
+		// A short handle for the container, derived from its name and kept
+		// unique across the fleet by appending a digest of the workspace path.
+		e.item.Alias = d.unique_alias(id, devc.Alias(display), local_folder)
 		e.publish()
 	}
 
@@ -675,4 +678,45 @@ func (d *Daemon) unique_name(id string, name string) string {
 		}
 	}
 	return name
+}
+
+// unique_alias returns stem when no other container already answers to it,
+// otherwise stem with a growing prefix of Fingerprint(seed) appended — the
+// git-short-hash approach — until it is free. Both other aliases AND other
+// names are treated as taken, so a resolved alias never collides with any
+// other container's handle and lookups stay unambiguous. The digest is derived
+// from seed (the workspace path), so the same project recreated later lands on
+// the same alias rather than a random one.
+func (d *Daemon) unique_alias(id string, stem string, seed string) string {
+	if stem == "" {
+		stem = "dc"
+	}
+
+	d.mu.Lock()
+	taken := make(map[string]struct{}, len(d.entries)*2)
+	for other_id, other := range d.entries {
+		if other_id == id {
+			continue
+		}
+		s := other.snapshot()
+		if s.Alias != "" {
+			taken[s.Alias] = struct{}{}
+		}
+		if s.Name != "" {
+			taken[s.Name] = struct{}{}
+		}
+	}
+	d.mu.Unlock()
+
+	if _, ok := taken[stem]; !ok {
+		return stem
+	}
+	fp := devc.Fingerprint(seed)
+	for n := 2; n <= len(fp); n++ {
+		cand := stem + "-" + fp[:n]
+		if _, ok := taken[cand]; !ok {
+			return cand
+		}
+	}
+	return stem + "-" + fp
 }

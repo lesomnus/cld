@@ -44,6 +44,10 @@ func NewCmdIt() *xli.Command {
 					return err
 				}
 				name = resolved
+			} else if t := find_target(ctx, c.SocketPath(), name); t != nil {
+				// Accept a short alias too: resolve it to the canonical name so
+				// the session name and daemon lookups all key off the same one.
+				name = t.Name
 			}
 			session := devc.SessionName(name)
 
@@ -101,6 +105,31 @@ func sole_devcontainer(ctx context.Context, socket string) (string, error) {
 		}
 		return "", fmt.Errorf("multiple devcontainers; name one: %s", strings.Join(names, ", "))
 	}
+}
+
+// find_target maps a user-supplied handle — a display name or a short alias —
+// to the devcontainer it refers to, matching NAME before ALIAS so a name always
+// wins. It returns nil when nothing matches or the daemon is unreachable, which
+// lets callers fall back to their existing behavior (treat the handle verbatim
+// and surface the daemon's own not-found error).
+func find_target(ctx context.Context, socket string, handle string) *daemon.Item {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	items, err := daemon.FetchItems(ctx, socket)
+	if err != nil {
+		return nil
+	}
+	for i := range items {
+		if items[i].Name == handle {
+			return &items[i]
+		}
+	}
+	for i := range items {
+		if items[i].Alias == handle {
+			return &items[i]
+		}
+	}
+	return nil
 }
 
 // daemon_container_reachable reports whether this host's docker can see the

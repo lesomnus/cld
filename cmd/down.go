@@ -39,6 +39,11 @@ func NewCmdDown() *xli.Command {
 				return fmt.Errorf("name required (or pass --all to remove every devcontainer)")
 			}
 
+			// Accept a short alias in place of the display name.
+			if t := find_target(ctx, c.SocketPath(), name); t != nil {
+				name = t.Name
+			}
+
 			if err := daemon.Down(ctx, c.SocketPath(), name); err != nil {
 				return err
 			}
