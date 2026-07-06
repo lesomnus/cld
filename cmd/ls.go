@@ -3,6 +3,8 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/lesomnus/cld/internal/daemon"
@@ -28,9 +30,34 @@ func NewCmdLs() *xli.Command {
 				if len(id) > 12 {
 					id = id[:12]
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", it.Name, it.Alias, id, it.Status, it.Version, it.LocalFolder)
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", it.Name, it.Alias, id, it.Status, it.Version, abbreviate_home(it.LocalFolder))
 			}
 			return w.Flush()
 		}),
 	}
+}
+
+// abbreviate_home shortens a path under this client's home directory to a
+// leading "~". The local folder is a host path, so this only fires when the
+// client shares that home (running on the host); run inside a container with a
+// different home it leaves the full path, never mis-abbreviating it.
+func abbreviate_home(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return p
+	}
+	return abbreviate_home_in(p, home)
+}
+
+func abbreviate_home_in(p, home string) string {
+	if p == "" || home == "" || home == "/" {
+		return p
+	}
+	if p == home {
+		return "~"
+	}
+	if rest, ok := strings.CutPrefix(p, home+"/"); ok {
+		return "~/" + rest
+	}
+	return p
 }

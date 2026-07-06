@@ -47,7 +47,7 @@ $ cld install
 # `devcontainer up`, a .devcontainer compose stack, …), then:
 $ cld ls
 NAME  ALIAS  CONTAINER     STATUS  VERSION  LOCAL FOLDER
-myapp myapp  3f9c2a81b04d  ready   2.1.191  /home/you/src/myapp
+myapp myapp  3f9c2a81b04d  ready   2.1.191  ~/src/myapp
 
 $ cld it myapp
 ```
@@ -201,8 +201,8 @@ day in `cld up`/`cld it`/`cld ls`/`cld down`.
 - **`cld ls`** — list the devcontainers the daemon manages, with each one's
   `NAME`, `ALIAS`, `CONTAINER`, `STATUS` (`provisioning` → `ready`, or
   `session-ended` / `stopped` / `failed`), claude `VERSION`, and `LOCAL FOLDER`
-  (the project's path on the host). Use it to see what's running and to get the
-  names for `cld it`/`cld down`.
+  (the project's path on the host, shown as `~` when under your home). Use it to
+  see what's running and to get the names for `cld it`/`cld down`.
 - **`cld down <name>`** — take a final backup, then stop and remove the
   devcontainer (for a Compose devcontainer, the whole project, minus any sidecar
   marked `cld.ignore`). Named volumes and the host-side conversation backup are
