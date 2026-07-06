@@ -11,6 +11,7 @@ import (
 	"github.com/lesomnus/cld/internal/daemon"
 	"github.com/lesomnus/cld/internal/devc"
 	"github.com/lesomnus/cld/internal/devcup"
+	"github.com/lesomnus/cld/internal/termx"
 	"github.com/lesomnus/xli"
 	"github.com/lesomnus/xli/arg"
 	"github.com/lesomnus/xli/flg"
@@ -102,6 +103,11 @@ func NewCmdUp() *xli.Command {
 					return err
 				}
 			}
+
+			// Name this window after the devcontainer, like `cld it`, so
+			// multiple attach windows are distinguishable. The daemon's tmux runs
+			// with set-titles off, so it leaves this outer title alone.
+			termx.SetTitle(item.Name)
 
 			session := devc.SessionName(item.Name)
 			ictx, cancel := context.WithTimeout(ctx, 2*time.Second)
