@@ -118,6 +118,43 @@ func SeedState(existing []byte, workspace string) ([]byte, error) {
 	return json.MarshalIndent(doc, "", "  ")
 }
 
+// unsafeUserSettingsKeys are keys dropped from a host settings.json before it is
+// installed into a container: they carry host secrets or run host-only binaries,
+// or relax guardrails in a way that must not silently cross into a lower-trust
+// sandbox.
+//   - env holds arbitrary environment, a common home for API keys/tokens.
+//   - apiKeyHelper/awsCredentialExport/awsAuthRefresh/otelHeadersHelper run host
+//     binaries that do not exist in the container (like the gitconfig
+//     credential.helper); auth comes from cld's token / bootstrapped credentials.
+//   - enableAllProjectMcpServers/enabledMcpjsonServers auto-trust a repo's own
+//     MCP servers; that trust should be re-decided in the sandbox, not inherited.
+var unsafeUserSettingsKeys = []string{
+	"env",
+	"apiKeyHelper", "awsCredentialExport", "awsAuthRefresh", "otelHeadersHelper",
+	"enableAllProjectMcpServers", "enabledMcpjsonServers",
+}
+
+// SanitizeUserSettings prepares a host settings.json for installation into a
+// container. ok is false when the content is not a JSON object — the caller then
+// skips it rather than letting an unparseable file reach (and fail) the settings
+// seed, which would block every session. Otherwise the unsafe keys above are
+// dropped and the remaining presentation/workflow keys (model, permissions,
+// hooks, statusLine, output style, …) pass through.
+func SanitizeUserSettings(data []byte) ([]byte, bool) {
+	var doc map[string]any
+	if json.Unmarshal(data, &doc) != nil || doc == nil {
+		return nil, false
+	}
+	for _, k := range unsafeUserSettingsKeys {
+		delete(doc, k)
+	}
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return nil, false
+	}
+	return out, true
+}
+
 // SeedSettings merges retention settings into an existing settings.json
 // document (may be nil). cleanupPeriodDays must be large: cleanup is keyed
 // on file mtime, which "docker cp" preserves, so restored transcripts would

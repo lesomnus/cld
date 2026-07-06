@@ -111,3 +111,37 @@ func TestClassify(t *testing.T) {
 		require.Equal(t, claude.BackupSkip, claude.Classify("projects/-workspace/x.lock"))
 	})
 }
+
+func TestSanitizeUserSettings(t *testing.T) {
+	t.Run("drops secret/host-only/guardrail keys, keeps workflow keys", func(t *testing.T) {
+		in := []byte(`{
+			"apiKeyHelper":"/host/bin/key",
+			"awsAuthRefresh":"x", "otelHeadersHelper":"y",
+			"env":{"ANTHROPIC_API_KEY":"sk-secret","FOO":"bar"},
+			"enableAllProjectMcpServers":true, "enabledMcpjsonServers":["evil"],
+			"model":"opus", "permissions":{"allow":["Bash"]}, "outputStyle":"terse"
+		}`)
+		out, ok := claude.SanitizeUserSettings(in)
+		require.True(t, ok)
+		var doc map[string]any
+		require.NoError(t, json.Unmarshal(out, &doc))
+		for _, k := range []string{"apiKeyHelper", "awsAuthRefresh", "otelHeadersHelper", "env", "enableAllProjectMcpServers", "enabledMcpjsonServers"} {
+			require.NotContainsf(t, doc, k, "%s must be stripped", k)
+		}
+		require.NotContains(t, string(out), "sk-secret", "no secret from env may survive")
+		require.Equal(t, "opus", doc["model"])
+		require.Contains(t, doc, "permissions")
+		require.Equal(t, "terse", doc["outputStyle"])
+	})
+	t.Run("a clean object round-trips ok", func(t *testing.T) {
+		out, ok := claude.SanitizeUserSettings([]byte(`{"model":"opus"}`))
+		require.True(t, ok)
+		require.JSONEq(t, `{"model":"opus"}`, string(out))
+	})
+	t.Run("non-object content is rejected (ok=false) so it is skipped", func(t *testing.T) {
+		for _, bad := range []string{`not json`, `{"a":1,}`, `[1,2]`, `null`, `5`} {
+			_, ok := claude.SanitizeUserSettings([]byte(bad))
+			require.Falsef(t, ok, "input %q should be rejected", bad)
+		}
+	})
+}

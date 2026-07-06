@@ -8,7 +8,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
 	"path"
+	"path/filepath"
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
@@ -97,6 +100,60 @@ func WriteFile(ctx context.Context, cli *client.Client, ctr string, dir string, 
 	_, err = cli.CopyToContainer(ctx, ctr, client.CopyToContainerOptions{
 		DestinationPath: dir,
 		Content:         &buf,
+	})
+	return err
+}
+
+// CopyDirToContainer copies the host directory tree rooted at src into the
+// container as destDir/name (destDir must exist). It emits explicit directory
+// entries owned by uid:gid — unlike a bare docker cp of a nested file, which
+// would leave the created parents owned by root. Only regular files and
+// directories are copied.
+func CopyDirToContainer(ctx context.Context, cli *client.Client, ctr, destDir, name, src string, uid, gid int) error {
+	pr, pw := io.Pipe()
+	go func() {
+		tw := tar.NewWriter(pw)
+		err := filepath.WalkDir(src, func(p string, d fs.DirEntry, werr error) error {
+			if werr != nil {
+				return werr
+			}
+			rel, err := filepath.Rel(src, p)
+			if err != nil {
+				return err
+			}
+			arc := name
+			if rel != "." {
+				arc = name + "/" + filepath.ToSlash(rel)
+			}
+			if d.IsDir() {
+				return tw.WriteHeader(&tar.Header{
+					Typeflag: tar.TypeDir, Name: arc + "/", Mode: 0o755, Uid: uid, Gid: gid,
+				})
+			}
+			if !d.Type().IsRegular() {
+				return nil
+			}
+			data, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			if err := tw.WriteHeader(&tar.Header{
+				Typeflag: tar.TypeReg, Name: arc, Mode: 0o644, Uid: uid, Gid: gid, Size: int64(len(data)),
+			}); err != nil {
+				return err
+			}
+			_, err = tw.Write(data)
+			return err
+		})
+		if err == nil {
+			err = tw.Close()
+		}
+		pw.CloseWithError(err)
+	}()
+
+	_, err := cli.CopyToContainer(ctx, ctr, client.CopyToContainerOptions{
+		DestinationPath: destDir,
+		Content:         pr,
 	})
 	return err
 }

@@ -25,6 +25,17 @@ auth:
   # container code.
   #forward_agent: true
 
+  # Copy your host-level Claude Code config into each session so a devcontainer
+  # behaves like your host claude: ~/.claude/settings.json, the personal
+  # CLAUDE.md, and the commands/, agents/, and output-styles/ directories.
+  # settings.json is sanitized first — secret/host-only keys are dropped so they
+  # never cross into the container (env, the apiKeyHelper/aws*/otel auth helpers,
+  # the project-MCP auto-trust flags); model, permissions, hooks and presentation
+  # keys carry over. The credentials file, project history, and runtime state are
+  # never copied. Staged on `cld it`/`cld up`. Enabled by default; set false to
+  # keep containers on cld's minimal seed only.
+  #share_config: true
+
 release:
   # Base URL of the Claude Code release channel.
   #base_url: https://downloads.claude.ai/claude-code-releases

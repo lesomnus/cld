@@ -164,6 +164,18 @@ host-only `credential.helper` (e.g. `gopass`, `osxkeychain`) is *not* forwarded
 — it wouldn't exist in the container — so HTTPS auth falls back to whatever the
 container itself provides. Turn the agent off with `auth.forward_agent: false`.
 
+**Your claude config comes with you.** cld copies your host-level Claude Code
+config into each session so a devcontainer feels like your host claude:
+`~/.claude/settings.json`, your personal `CLAUDE.md`, and your `commands/`,
+`agents/`, and `output-styles/`. `settings.json` is sanitized first — its
+secret- and host-only keys are dropped so they never cross into the container
+(`env`, the `apiKeyHelper`/`aws*`/`otel` auth helpers, the project-MCP
+auto-trust flags), like the git credential helper above; your model,
+permissions, hooks and presentation keys carry over. The credentials file,
+project history, and runtime state are never copied. It is a mirror, refreshed
+on each `cld it` / `cld up` (removing what you removed on the host); turn it off
+with `auth.share_config: false`.
+
 ## Commands
 
 The daemon (**`cld serve`**) is the engine; everything else is a client of it.
@@ -244,6 +256,10 @@ All settings are optional; see `cld.yaml` for the full list with defaults.
 To drop the `~/.claude` bind mount from your devcontainers entirely, point
 `auth.oauth_token_file` at a file holding a token from `claude setup-token`;
 cld injects it so a fresh container authenticates with no interactive login.
+
+Your host-level Claude Code config (settings, `CLAUDE.md`, commands, agents,
+output styles) is propagated into every session by default; see
+`auth.share_config` in `cld.yaml` to disable it.
 
 See `plan.md` for the design and roadmap.
 

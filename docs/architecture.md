@@ -21,7 +21,8 @@ Key paths (`CacheDir` defaults to `$XDG_CACHE_HOME/cld`, i.e. `~/.cache/cld`):
 
 - `<CacheDir>/cld.sock` — daemon control API (HTTP over a unix socket)
 - `<CacheDir>/tmux.sock` — the dedicated tmux server
-- `<CacheDir>/agent.sock`, `<CacheDir>/gitconfig` — host shares staged for relays
+- `<CacheDir>/agent.sock`, `<CacheDir>/gitconfig`, `<CacheDir>/claude-config/` —
+  host shares staged for the daemon (ssh-agent, gitconfig, Claude Code config)
 
 ## Topology
 
@@ -59,7 +60,10 @@ running, non-ignored devcontainer it, in order:
 2. **install binaries** — copy `claude-<version>` and the `cld` binary into
    `/usr/local/bin` (atomic symlink swap; checksum-verified).
 3. **prepare state** — restore the project backup, bootstrap credentials, install
-   the host gitconfig, and seed onboarding/trust keys.
+   the host gitconfig and your shared Claude Code config (settings/memory/commands/
+   agents/output-styles), seed onboarding/trust keys, and finally `chown -R` the
+   config dir to the container user (docker cp leaves synthesized parent dirs
+   root-owned, which would block a new conversation's transcript write).
 4. **create the session** — a host tmux session whose pane runs
    `cld x exec … -- claude` (see below).
 5. **start watchers** — file-change sync, container watch, and the ssh-agent and
@@ -119,6 +123,18 @@ route that fits the deployment:
   is a host-only binary, so `cld` strips it from the forwarded gitconfig
   (`install_gitconfig`) rather than shipping a helper the container cannot run;
   HTTPS remotes therefore rely on whatever the container itself provides.
+- **Config sharing** (`stageClaudeConfig` → `install_claude_config`) — `cld it`/
+  `cld up` stage your host `~/.claude` config into `<CacheDir>/claude-config/`
+  via a file-level allowlist (settings.json, CLAUDE.md, and the
+  commands/agents/output-styles directories; never credentials, `.claude.json`,
+  or history), and the daemon *mirrors* it into each session's config dir —
+  installing what is present, removing what the host dropped. Since
+  `CLAUDE_CONFIG_DIR` is that dir, claude reads them as user-level config.
+  `settings.json` is the base cld's own keys merge onto, after
+  `SanitizeUserSettings` drops secret/host-only keys (`env`, the
+  apiKeyHelper/aws*/otel helpers, project-MCP auto-trust) — and skips it entirely
+  if it is not a JSON object, so a malformed host file can never fail the seed.
+  Off with `auth.share_config: false`.
 
 The same generic relay carries the control API into containers.
 

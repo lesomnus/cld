@@ -55,6 +55,19 @@ type AuthConfig struct {
 	// keep the control plane off-limits to container code entirely. Pointer so
 	// an unset value still defaults to true.
 	RemoteControl *bool `yaml:"remote_control"`
+
+	// ShareConfig copies your host-level Claude Code config into each session,
+	// so a devcontainer behaves like your host claude: ~/.claude/settings.json,
+	// the personal CLAUDE.md, and the commands/, agents/, and output-styles/
+	// directories. settings.json is sanitized first — its secret- or host-only
+	// keys are dropped so they never cross into the container (env, the
+	// apiKeyHelper/aws*/otel auth helpers, and the project-MCP auto-trust flags);
+	// your model, permissions, hooks, and presentation keys carry over. The
+	// credentials file, project history, and runtime state are never copied.
+	// Like ~/.gitconfig it is staged on `cld it`/`cld up`. Enabled by default;
+	// set false to keep containers on cld's minimal seed only. Pointer so an
+	// unset value still defaults to true.
+	ShareConfig *bool `yaml:"share_config"`
 }
 
 // ForwardAgentEnabled reports whether ssh-agent forwarding is on (default true).
@@ -66,6 +79,12 @@ func (c AuthConfig) ForwardAgentEnabled() bool {
 // (default true).
 func (c AuthConfig) RemoteControlEnabled() bool {
 	return c.RemoteControl == nil || *c.RemoteControl
+}
+
+// ShareConfigEnabled reports whether host Claude Code config is propagated into
+// sessions (default true).
+func (c AuthConfig) ShareConfigEnabled() bool {
+	return c.ShareConfig == nil || *c.ShareConfig
 }
 
 type UpConfig struct {
@@ -192,6 +211,13 @@ func (c *Config) AgentSocketPath() string {
 // agent is picked up.
 func (c *Config) AgentSourcePath() string {
 	return filepath.Join(c.CacheDir, "agent.source")
+}
+
+// ClaudeShareDir is where the host's shared Claude Code config (settings.json,
+// CLAUDE.md, commands/, agents/, output-styles/) is staged for the daemon to
+// copy into each session, mirroring GitConfigPath.
+func (c *Config) ClaudeShareDir() string {
+	return filepath.Join(c.CacheDir, "claude-config")
 }
 
 // GitConfigPath is where the host's ~/.gitconfig is staged for the daemon to

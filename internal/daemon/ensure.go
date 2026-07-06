@@ -471,6 +471,14 @@ func (d *Daemon) prepare_state(ctx context.Context, e *entry, id string) error {
 		return fmt.Errorf("install gitconfig: %w", err)
 	}
 
+	// Lay down the host's shared Claude Code config (settings.json is the base
+	// the seed below merges cld's keys onto). Best effort — a failure must not
+	// block the session over an optional convenience.
+	if err := d.install_claude_config(ctx, e, id); err != nil {
+		d.log.Warn("share claude config failed",
+			slog.String("name", e.item.Name), slog.String("error", err.Error()))
+	}
+
 	if err := d.seed_file(ctx, e, id, ".claude.json", 0o600, func(b []byte) ([]byte, error) {
 		return claude.SeedState(b, e.item.Workspace)
 	}); err != nil {
