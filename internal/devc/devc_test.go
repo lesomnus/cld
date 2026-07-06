@@ -149,4 +149,19 @@ func TestWorkspaceFolder(t *testing.T) {
 		v := devc.WorkspaceFolder(config, "/home/hypnos/workspaces/cld", mounts)
 		require.Equal(t, "/workspace", v)
 	})
+	t.Run("nested project maps through the parent mount", func(t *testing.T) {
+		// The repo root is bound at /workspace; the project is a subfolder. With
+		// no readable config (containerized daemon), the folder resolves under
+		// the mount it sits in.
+		m := []devc.Mount{
+			{Source: "/home/me/workspaces", Destination: "/workspaces"},
+			{Source: "/home/me/workspaces/holiday", Destination: "/workspace"},
+		}
+		v := devc.WorkspaceFolder(nil, "/home/me/workspaces/holiday/src/cove", m)
+		require.Equal(t, "/workspace/src/cove", v) // most specific mount wins
+	})
+	t.Run("exact mount source still maps to the destination", func(t *testing.T) {
+		m := []devc.Mount{{Source: "/home/me/proj", Destination: "/workspace"}}
+		require.Equal(t, "/workspace", devc.WorkspaceFolder(nil, "/home/me/proj", m))
+	})
 }

@@ -6,6 +6,7 @@ package devc
 import (
 	"encoding/json"
 	"hash/fnv"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -173,9 +174,15 @@ type Mount struct {
 
 // WorkspaceFolder resolves the workspace path inside the container.
 // A workspaceFolder explicitly set in devcontainer.json wins; otherwise the
-// mount whose source is the local folder tells where it landed. A
-// workspaceFolder that still contains unresolvable ${...} variables after
-// expansion is discarded in favor of the mount, since it is not a real path.
+// mount the local folder landed under tells where it is. A workspaceFolder that
+// still contains unresolvable ${...} variables after expansion is discarded in
+// favor of the mount, since it is not a real path.
+//
+// Reading workspaceFolder from devcontainer.json needs the config file, which a
+// containerized daemon cannot read at its host path — so the mount fallback must
+// stand on its own. It also handles a project nested inside a bound parent (the
+// repo root mounted at /workspace with the project in a subfolder): the local
+// folder maps to <destination>/<relative path> under the most specific mount.
 func WorkspaceFolder(config_file []byte, local_folder string, mounts []Mount) string {
 	if len(config_file) > 0 {
 		var c struct {
@@ -189,13 +196,29 @@ func WorkspaceFolder(config_file []byte, local_folder string, mounts []Mount) st
 		}
 	}
 
+	// Map the local folder through the mount it sits under. Prefer the longest
+	// matching source so a nested project resolves to the deeper mount (e.g.
+	// /workspace/src/app under a repo-root bind) rather than a shallower one.
 	want := filepath.Clean(local_folder)
+	best := ""
+	bestLen := -1
 	for _, m := range mounts {
-		if filepath.Clean(m.Source) == want {
-			return m.Destination
+		src := filepath.Clean(m.Source)
+		rel, err := filepath.Rel(src, want)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue // want is not src nor under it
+		}
+		if len(src) <= bestLen {
+			continue
+		}
+		bestLen = len(src)
+		if rel == "." {
+			best = m.Destination
+		} else {
+			best = path.Join(m.Destination, filepath.ToSlash(rel))
 		}
 	}
-	return ""
+	return best
 }
 
 // expandDevcontainerVars expands the devcontainer.json variables that resolve
