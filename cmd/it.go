@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/lesomnus/cld/internal/daemon"
-	"github.com/lesomnus/cld/internal/devc"
 	"github.com/lesomnus/cld/internal/termx"
 	"github.com/lesomnus/cld/internal/tmuxx"
 	"github.com/lesomnus/xli"
@@ -49,13 +48,6 @@ func NewCmdIt() *xli.Command {
 				// the session name and daemon lookups all key off the same one.
 				name = t.Name
 			}
-			session := devc.SessionName(name)
-
-			// Name this window after the devcontainer so multiple `cld it`
-			// windows are distinguishable. The daemon's tmux runs with
-			// set-titles off, so it leaves this outer title alone.
-			termx.SetTitle(name)
-
 			if v, _ := flg.Get[bool](cmd, "new"); v {
 				if err := daemon.RecreateSession(ctx, c.SocketPath(), name); err != nil {
 					return err
@@ -66,23 +58,7 @@ func NewCmdIt() *xli.Command {
 			// container before we hand the terminal over.
 			prepareHostShare(c)
 
-			// Ask the daemon where the tmux server lives and how to attach.
-			// When the daemon runs in a container this host can see, attach
-			// through a docker exec into it — the host needs no tmux at all.
-			// When we cannot see that container (e.g. we ARE a managed
-			// container reaching the daemon through the in-container relay),
-			// let the daemon stream the attach over the control socket. Without
-			// a reachable daemon, fall back to a local tmux attach.
-			ictx, cancel := context.WithTimeout(ctx, 2*time.Second)
-			info, ierr := daemon.FetchInfo(ictx, c.SocketPath())
-			cancel()
-			if ierr == nil && info.ContainerID != "" && daemon_container_reachable(ctx, info.ContainerID) {
-				return attach_via_exec(ctx, info, session, name, c.SocketPath())
-			}
-			if ierr == nil && info.APIAttach {
-				return daemon.AttachSession(ctx, c.SocketPath(), name)
-			}
-			return attach_local(ctx, c.TmuxSocketPath(), session, name, c.SocketPath())
+			return attachTo(ctx, c, name)
 		}),
 	}
 }
