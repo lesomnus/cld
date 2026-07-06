@@ -9,7 +9,7 @@ require (
 	github.com/lesomnus/mkot v0.0.0-20260611164331-66886cdbecf0
 	github.com/lesomnus/mkot/pretty v0.0.0-20260611164331-66886cdbecf0
 	github.com/lesomnus/otx v0.0.0-20260531101103-be4e3034ac45
-	github.com/lesomnus/xli v0.0.0-20260415201908-e5f4624a24b7
+	github.com/lesomnus/xli v0.0.0-20260706011716-6ca0efcec61c
 	github.com/lesomnus/z v0.0.0-20260531102454-3f1853bb4278
 	github.com/moby/moby/api v1.55.0
 	github.com/moby/moby/client v0.5.0

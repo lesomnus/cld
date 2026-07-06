@@ -21,7 +21,7 @@ func NewCmdDown() *xli.Command {
 			&flg.Switch{Name: "yes", Alias: 'y', Brief: "skip the confirmation prompt (with --all)"},
 		},
 		Args: arg.Args{
-			&arg.String{Name: "name", Brief: "devcontainer name as shown by `cld ls`", Optional: true},
+			&arg.String{Name: "name", Brief: "devcontainer name as shown by `cld ls`", Optional: true, Handler: completeNames()},
 		},
 		Handler: xli.OnRun(func(ctx context.Context, cmd *xli.Command, next xli.Next) error {
 			c := use_config.Must(ctx)

@@ -29,7 +29,7 @@ func NewCmdIt() *xli.Command {
 			&flg.Switch{Name: "new", Brief: "recreate the session if the user had ended it"},
 		},
 		Args: arg.Args{
-			&arg.String{Name: "name", Brief: "devcontainer name (`cld ls`); default: the only one / this container's own", Optional: true},
+			&arg.String{Name: "name", Brief: "devcontainer name (`cld ls`); default: the only one / this container's own", Optional: true, Handler: completeNames()},
 		},
 		Handler: xli.OnRun(func(ctx context.Context, cmd *xli.Command, next xli.Next) error {
 			c := use_config.Must(ctx)

@@ -249,6 +249,15 @@ You won't run these by hand; the daemon and the attach clients do:
 
 A global `--config <path>` overrides which `cld.yaml` is loaded.
 
+### Shell completion
+
+`cld` completes subcommands and flags, and — for `cld it` / `cld down` — the
+live devcontainer names (and aliases) the daemon is tracking. Enable it in zsh:
+
+```sh
+$ source <(cld completion zsh)   # or add this line to ~/.zshrc
+```
+
 ## Configuration
 
 All settings are optional; see `cld.yaml` for the full list with defaults.
