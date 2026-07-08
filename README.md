@@ -72,6 +72,12 @@ removes the devcontainer — for a Compose-based devcontainer the whole project
 `cld.ignore`. Named volumes and the host-side conversation backup are kept, so
 `cld up` later restores the history.
 
+`cld purge <name>` goes further: it stops and removes the devcontainer like
+`down`, but also deletes its named volumes and its host-side conversation backup,
+leaving no trace on the engine or on disk. It is irreversible, so it asks for
+confirmation (skip with `-y`). Use `down` to shelve a devcontainer, `purge` to
+be rid of it for good.
+
 The host needs no tmux for this: `cld it` asks the daemon where its tmux server
 lives and, when the daemon runs in a container, attaches through a `docker
 exec` into it — the tmux bundled in the image is the only one involved. (With
@@ -136,6 +142,7 @@ keeps running; reopen (or `cld it myapp` from the host) to pick it back up.
 | Recover after exiting claude        | `cld it --new <name>`                              |
 | Remove a devcontainer               | `cld down <name>` (keeps the conversation backup)  |
 | Remove every devcontainer cld manages | `cld down --all` (skips `cld.ignore` / non-cld)  |
+| Delete a devcontainer for good      | `cld purge <name>` (also deletes volumes + backup) |
 
 Things that just work — nothing for you to do:
 
@@ -225,6 +232,11 @@ day in `cld up`/`cld it`/`cld ls`/`cld down`.
   provisioned: before removing each container the daemon re-checks it against the
   same gate, so a container labelled `cld.ignore=true`, one matched by an
   `ignore:` glob, or any non-devcontainer is left alone.
+- **`cld purge <name>`** — like `down`, but also deletes the devcontainer's named
+  volumes and its host-side conversation backup, so nothing is left behind (the
+  shared global state — credentials/settings — is kept). It is irreversible, so
+  it prompts first; `-y`/`--yes` skips the prompt. **`cld purge --all`** purges
+  every devcontainer cld manages, under the same scope gate as `down --all`.
 
 ### Recover / inspect
 
@@ -251,8 +263,9 @@ A global `--config <path>` overrides which `cld.yaml` is loaded.
 
 ### Shell completion
 
-`cld` completes subcommands and flags, and — for `cld it` / `cld down` — the
-live devcontainer names (and aliases) the daemon is tracking. Enable it in zsh:
+`cld` completes subcommands and flags, and — for `cld it` / `cld down` /
+`cld purge` — the live devcontainer names (and aliases) the daemon is tracking.
+Enable it in zsh:
 
 ```sh
 $ source <(cld completion zsh)   # or add this line to ~/.zshrc

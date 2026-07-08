@@ -86,7 +86,14 @@ func down_all(ctx context.Context, cmd *xli.Command, socket string, yes bool) er
 	if err != nil {
 		return err
 	}
+	return report_teardown(cmd, results, "removed", "remove")
+}
 
+// report_teardown prints the per-devcontainer outcomes of a bulk down/purge to
+// cmd's error writer and returns an error if any failed. past is the success
+// word ("removed" / "purged") and base its infinitive ("remove" / "purge"),
+// used in the failure lines.
+func report_teardown(cmd *xli.Command, results []daemon.DownResult, past, base string) error {
 	failed := 0
 	for _, r := range results {
 		label := r.Name
@@ -94,14 +101,14 @@ func down_all(ctx context.Context, cmd *xli.Command, socket string, yes bool) er
 			label = r.ID
 		}
 		if r.OK {
-			fmt.Fprintf(cmd.ErrWriter, "cld: removed %s\n", label)
+			fmt.Fprintf(cmd.ErrWriter, "cld: %s %s\n", past, label)
 			continue
 		}
 		failed++
-		fmt.Fprintf(cmd.ErrWriter, "cld: failed to remove %s: %s\n", label, r.Error)
+		fmt.Fprintf(cmd.ErrWriter, "cld: failed to %s %s: %s\n", base, label, r.Error)
 	}
 	if failed > 0 {
-		return fmt.Errorf("%d of %d devcontainer(s) failed to remove", failed, len(results))
+		return fmt.Errorf("%d of %d devcontainer(s) failed to %s", failed, len(results), base)
 	}
 	return nil
 }

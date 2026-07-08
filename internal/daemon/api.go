@@ -44,6 +44,8 @@ func (d *Daemon) api() http.Handler {
 	mux.HandleFunc("POST /session/new", d.handle_session_new)
 	mux.HandleFunc("POST /down", d.handle_down)
 	mux.HandleFunc("POST /down/all", d.handle_down_all)
+	mux.HandleFunc("POST /purge", d.handle_purge)
+	mux.HandleFunc("POST /purge/all", d.handle_purge_all)
 	return mux
 }
 
@@ -194,10 +196,25 @@ func (d *Daemon) handle_session_new(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handle_down stops and removes a devcontainer, by display name. Backs
-// `cld down`. The final backup and removal run on the container's worker so the
-// copy-out finishes before Docker drops the container.
+// handle_down stops and removes a devcontainer, by display name, keeping its
+// volumes and backup. Backs `cld down`.
 func (d *Daemon) handle_down(w http.ResponseWriter, r *http.Request) {
+	d.handle_teardown(w, r, false)
+}
+
+// handle_purge stops and removes a devcontainer, by display name, and deletes
+// its named volumes and host-side conversation backup. Backs `cld purge`. It is
+// only on the full control plane, never the in-container scoped_api — a managed
+// container must not be able to erase its own (or any) history.
+func (d *Daemon) handle_purge(w http.ResponseWriter, r *http.Request) {
+	d.handle_teardown(w, r, true)
+}
+
+// handle_teardown backs both `cld down` and `cld purge`: the final backup (down
+// only) and removal run on the container's worker so the copy-out finishes
+// before Docker drops the container. purge additionally deletes the volumes and
+// backup.
+func (d *Daemon) handle_teardown(w http.ResponseWriter, r *http.Request, purge bool) {
 	name := r.URL.Query().Get("name")
 	if name == "" {
 		http.Error(w, "name required", http.StatusBadRequest)
@@ -210,7 +227,11 @@ func (d *Daemon) handle_down(w http.ResponseWriter, r *http.Request) {
 	}
 
 	done := make(chan error, 1)
-	if !e.mbox.post(func() { done <- d.down(d.base_ctx, e) }) {
+	task := func() { done <- d.down(d.base_ctx, e) }
+	if purge {
+		task = func() { done <- d.purge(d.base_ctx, e) }
+	}
+	if !e.mbox.post(task) {
 		http.Error(w, "container is no longer tracked", http.StatusConflict)
 		return
 	}
@@ -229,13 +250,25 @@ type DownResult struct {
 	Error string `json:"error,omitempty"`
 }
 
-// handle_down_all stops and removes every devcontainer cld manages. It fans the
-// daemon's tracked entries out to their own workers, so removals run
-// concurrently and each takes its final backup before Docker drops the
-// container; the per-container outcomes are gathered into the response. It is
-// only on the full control plane, never the in-container scoped_api — a managed
-// container must not be able to tear the whole fleet down. Backs `cld down
+// handle_down_all stops and removes every devcontainer cld manages, keeping
+// volumes and backups. Backs `cld down --all`.
+func (d *Daemon) handle_down_all(w http.ResponseWriter, r *http.Request) {
+	d.handle_teardown_all(w, r, false)
+}
+
+// handle_purge_all stops and removes every devcontainer cld manages and deletes
+// each one's named volumes and host-side conversation backup. Backs `cld purge
 // --all`.
+func (d *Daemon) handle_purge_all(w http.ResponseWriter, r *http.Request) {
+	d.handle_teardown_all(w, r, true)
+}
+
+// handle_teardown_all backs `cld down --all` and `cld purge --all`. It fans the
+// daemon's tracked entries out to their own workers, so removals run
+// concurrently and each takes its final backup (down only) before Docker drops
+// the container; the per-container outcomes are gathered into the response. It is
+// only on the full control plane, never the in-container scoped_api — a managed
+// container must not be able to tear the whole fleet down.
 //
 // The tracked set is only a hint: an entry exists for every started container
 // and is declassified as ignored/non-devcontainer only later by ensure (and a
@@ -246,7 +279,7 @@ type DownResult struct {
 // that pass both are removed and reported; anything else is left untouched and
 // omitted, so a not-yet-classified or leaked entry for a cld.ignore or plain
 // container is never destroyed.
-func (d *Daemon) handle_down_all(w http.ResponseWriter, r *http.Request) {
+func (d *Daemon) handle_teardown_all(w http.ResponseWriter, _ *http.Request, purge bool) {
 	d.mu.Lock()
 	entries := make([]*entry, 0, len(d.entries))
 	for _, e := range d.entries {
@@ -275,7 +308,11 @@ func (d *Daemon) handle_down_all(w http.ResponseWriter, r *http.Request) {
 				done <- outcome{attempted: false}
 				return
 			}
-			done <- outcome{attempted: true, err: d.down(d.base_ctx, e)}
+			teardown := d.down
+			if purge {
+				teardown = d.purge
+			}
+			done <- outcome{attempted: true, err: teardown(d.base_ctx, e)}
 		})
 		// A worker whose mailbox is already closed (its container was torn down
 		// concurrently) is effectively already removed; skip it silently.
@@ -492,4 +529,61 @@ func Down(ctx context.Context, socket string, name string) error {
 		return fmt.Errorf("daemon: %s: %s", res.Status, string(body))
 	}
 	return nil
+}
+
+// Purge asks the daemon to stop and remove a devcontainer and to delete its
+// named volumes and host-side conversation backup — the irreversible superset of
+// Down. It uses the same generous timeout as Down because tearing down a Compose
+// project and removing volumes can take a while.
+func Purge(ctx context.Context, socket string, name string) error {
+	hc := NewSocketClient(socket)
+	hc.Timeout = 2 * time.Minute
+	url := "http://cld/purge?name=" + urlpkg.QueryEscape(name)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		return err
+	}
+
+	res, err := hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("is `cld serve` running? %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 512))
+		return fmt.Errorf("daemon: %s: %s", res.Status, string(body))
+	}
+	return nil
+}
+
+// PurgeAll asks the daemon to stop and remove every devcontainer it manages and
+// to delete each one's named volumes and host-side conversation backup,
+// returning the per-container outcome. Like DownAll it never touches containers
+// cld does not manage, and allows a generous timeout because several teardowns —
+// each including volume removal — run at once.
+func PurgeAll(ctx context.Context, socket string) ([]DownResult, error) {
+	hc := NewSocketClient(socket)
+	hc.Timeout = 10 * time.Minute
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://cld/purge/all", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	res, err := hc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("is `cld serve` running? %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 512))
+		return nil, fmt.Errorf("daemon: %s: %s", res.Status, string(body))
+	}
+
+	var body struct {
+		Results []DownResult `json:"results"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		return nil, err
+	}
+	return body.Results, nil
 }

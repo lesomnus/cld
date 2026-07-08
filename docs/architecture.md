@@ -267,7 +267,9 @@ can — i.e. with a containerized daemon.
   containers run agent-driven, potentially untrusted repository content. The
   fleet-wide `/down/all` (behind `cld down --all`) is deliberately absent from
   the scoped API — only the host-side control plane exposes it — so a managed
-  container cannot tear the whole fleet down.
+  container cannot tear the whole fleet down. The `/purge` and `/purge/all`
+  endpoints (behind `cld purge`) are likewise host-only: a managed container
+  cannot delete any project's volumes or conversation backup, not even its own.
 - **Opt-out.** `auth.remote_control: false` disables the relay entirely
   (`RemoteControlEnabled`), symmetric to `forward_agent` for the ssh-agent
   relay. It is on by default.
