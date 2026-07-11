@@ -38,7 +38,9 @@ type AuthConfig struct {
 	// `claude setup-token`). When set, the token is injected as
 	// CLAUDE_CODE_OAUTH_TOKEN into each session so a fresh container needs no
 	// interactive login. The path (not the token) is all that appears in the
-	// tmux command; keep the file mode 0600.
+	// tmux command; keep the file mode 0600. A token stored via
+	// `cld auth set-token` (under DataDir, see OAuthTokenStorePath) takes
+	// precedence over this static path when present.
 	OAuthTokenFile string `yaml:"oauth_token_file"`
 
 	// ForwardAgent relays the host ssh-agent into each session (SSH_AUTH_SOCK),
@@ -242,4 +244,13 @@ func (c *Config) GlobalBackupDir() string {
 // keyed by a digest of the host-side workspace path.
 func (c *Config) ProjectBackupDir(key string) string {
 	return filepath.Join(c.DataDir, "projects", key)
+}
+
+// OAuthTokenStorePath is where `cld auth set-token` persists the OAuth token the
+// daemon injects into sessions. It lives under DataDir — not the config file — so
+// a container can set it over the control API without editing config, and so the
+// token value never appears in cld.yaml. The daemon prefers it over
+// Auth.OAuthTokenFile when the file exists. Keep it mode 0600.
+func (c *Config) OAuthTokenStorePath() string {
+	return filepath.Join(c.DataDir, "oauth-token")
 }

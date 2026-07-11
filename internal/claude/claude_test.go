@@ -92,11 +92,12 @@ func TestClassify(t *testing.T) {
 		require.Equal(t, claude.BackupProject, claude.Classify("file-history/xyz/1"))
 	})
 	t.Run("global state", func(t *testing.T) {
-		require.Equal(t, claude.BackupGlobal, claude.Classify(".credentials.json"))
 		require.Equal(t, claude.BackupGlobal, claude.Classify(".claude.json"))
 		require.Equal(t, claude.BackupGlobal, claude.Classify("settings.json"))
 		require.Equal(t, claude.BackupGlobal, claude.Classify("agents/foo.md"))
 		require.Equal(t, claude.BackupGlobal, claude.Classify("CLAUDE.md"))
+		require.Equal(t, claude.BackupGlobal, claude.Classify("skills/x/SKILL.md"))
+		require.Equal(t, claude.BackupGlobal, claude.Classify("plugins/p/manifest.json"))
 	})
 	t.Run("skipped state", func(t *testing.T) {
 		require.Equal(t, claude.BackupSkip, claude.Classify("shell-snapshots/x"))
@@ -106,9 +107,57 @@ func TestClassify(t *testing.T) {
 		require.Equal(t, claude.BackupSkip, claude.Classify("foo.lock"))
 		require.Equal(t, claude.BackupSkip, claude.Classify("."))
 	})
+	t.Run("unknown entries are skipped, not shared globally", func(t *testing.T) {
+		// Background-session and other per-container state must never reach the
+		// shared global backup, else completed sessions from one devcontainer
+		// surface in another's FleetView.
+		require.Equal(t, claude.BackupSkip, claude.Classify("jobs/85f00019/state.json"))
+		// Credentials are per-container now (auth is injected as an env token);
+		// sharing the rotating OAuth session across containers breaks refresh.
+		require.Equal(t, claude.BackupSkip, claude.Classify(".credentials.json"))
+		require.Equal(t, claude.BackupSkip, claude.Classify("tasks/abc/1.json"))
+		require.Equal(t, claude.BackupSkip, claude.Classify("backups/x"))
+		require.Equal(t, claude.BackupSkip, claude.Classify("history.jsonl"))
+		require.Equal(t, claude.BackupSkip, claude.Classify("plans/p.md"))
+		require.Equal(t, claude.BackupSkip, claude.Classify("telemetry/t"))
+		require.Equal(t, claude.BackupSkip, claude.Classify("daemon/x"))
+		require.Equal(t, claude.BackupSkip, claude.Classify("agent.sock"))
+	})
 	t.Run("temp files are skipped even under projects", func(t *testing.T) {
 		require.Equal(t, claude.BackupSkip, claude.Classify("projects/-workspace/s1.jsonl.tmp"))
 		require.Equal(t, claude.BackupSkip, claude.Classify("projects/-workspace/x.lock"))
+	})
+}
+
+func TestStripProjectState(t *testing.T) {
+	t.Run("drops the per-project projects map, keeps global keys", func(t *testing.T) {
+		in := []byte(`{
+			"oauthAccount":{"emailAddress":"a@b.c"},
+			"userID":"u1",
+			"mcpServers":{"user-scoped":{}},
+			"projects":{"/workspace":{"history":[{"display":"secret prompt"}]}}
+		}`)
+		out, ok := claude.StripProjectState(in)
+		require.True(t, ok)
+
+		var doc map[string]any
+		require.NoError(t, json.Unmarshal(out, &doc))
+		require.NotContains(t, doc, "projects", "per-project state must be stripped")
+		require.NotContains(t, string(out), "secret prompt", "no project's history may survive")
+		require.Contains(t, doc, "oauthAccount")
+		require.Equal(t, "u1", doc["userID"])
+		require.Contains(t, doc, "mcpServers")
+	})
+	t.Run("a document without projects round-trips ok", func(t *testing.T) {
+		out, ok := claude.StripProjectState([]byte(`{"userID":"u1"}`))
+		require.True(t, ok)
+		require.JSONEq(t, `{"userID":"u1"}`, string(out))
+	})
+	t.Run("non-object content is rejected so it is dropped, not stored intact", func(t *testing.T) {
+		for _, bad := range []string{`not json`, `[1,2]`, `null`, `5`, ``} {
+			_, ok := claude.StripProjectState([]byte(bad))
+			require.Falsef(t, ok, "input %q should be rejected", bad)
+		}
 	})
 }
 

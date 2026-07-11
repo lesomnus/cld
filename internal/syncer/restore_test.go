@@ -79,6 +79,36 @@ func TestWriteBackup(t *testing.T) {
 	})
 }
 
+func TestSanitizeGlobalState(t *testing.T) {
+	t.Run("strips the projects map from the global .claude.json", func(t *testing.T) {
+		dir := t.TempDir()
+		p := filepath.Join(dir, ".claude.json")
+		require.NoError(t, os.WriteFile(p,
+			[]byte(`{"userID":"u1","projects":{"/workspace":{"history":[{"display":"leak"}]}}}`), 0o600))
+
+		require.NoError(t, sanitize_global_state(dir))
+
+		data, err := os.ReadFile(p)
+		require.NoError(t, err)
+		require.NotContains(t, string(data), "projects", "per-project state must not reach the shared backup")
+		require.NotContains(t, string(data), "leak")
+		require.Contains(t, string(data), "u1")
+	})
+	t.Run("drops an unparseable file rather than leaking it", func(t *testing.T) {
+		dir := t.TempDir()
+		p := filepath.Join(dir, ".claude.json")
+		require.NoError(t, os.WriteFile(p, []byte("not json"), 0o600))
+
+		require.NoError(t, sanitize_global_state(dir))
+
+		_, err := os.Stat(p)
+		require.True(t, os.IsNotExist(err), "an intact, potentially leaky file must not remain")
+	})
+	t.Run("a missing file is a no-op", func(t *testing.T) {
+		require.NoError(t, sanitize_global_state(t.TempDir()))
+	})
+}
+
 func TestExtractSymlinkSafety(t *testing.T) {
 	t.Run("rejects absolute symlink and does not follow it on write", func(t *testing.T) {
 		root := t.TempDir()

@@ -273,10 +273,14 @@ func (d *Daemon) handle_event(ctx context.Context, msg events.Message) {
 	}
 }
 
-// reconcile lists running devcontainers and ensures each; entries whose
-// container is gone are torn down.
+// reconcile lists every devcontainer, running or stopped, and ensures each;
+// entries whose container is gone (destroyed, not merely stopped) are torn
+// down. Stopped containers are listed with All so a daemon that starts while a
+// container is down still shows it, and so a container that stops mid-run is
+// kept in the listing rather than dropped as if it had vanished.
 func (d *Daemon) reconcile(ctx context.Context) {
 	res, err := d.cli.ContainerList(ctx, client.ContainerListOptions{
+		All: true,
 		Filters: client.Filters{
 			"label": {devc.LabelLocalFolder: true},
 		},

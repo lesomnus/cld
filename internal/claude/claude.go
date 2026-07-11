@@ -118,6 +118,28 @@ func SeedState(existing []byte, workspace string) ([]byte, error) {
 	return json.MarshalIndent(doc, "", "  ")
 }
 
+// StripProjectState returns a .claude.json document reduced to its
+// project-independent keys, dropping the per-project "projects" map. That map
+// is keyed by the workspace path, which is the same in every cld devcontainer
+// (e.g. /workspace), so keeping it in the shared global backup merges one
+// project's prompt history and project-scoped settings into every other project
+// on restore — the very cross-project bleed the dedicated config dir exists to
+// prevent (see ConfigDirIn). Per-project transcripts live in the project
+// backup, not here. A document that is not a JSON object is rejected (ok=false)
+// so the caller can drop it rather than store an intact, leaky copy.
+func StripProjectState(data []byte) ([]byte, bool) {
+	var doc map[string]any
+	if json.Unmarshal(data, &doc) != nil || doc == nil {
+		return nil, false
+	}
+	delete(doc, "projects")
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return nil, false
+	}
+	return out, true
+}
+
 // unsafeUserSettingsKeys are keys dropped from a host settings.json before it is
 // installed into a container: they carry host secrets or run host-only binaries,
 // or relax guardrails in a way that must not silently cross into a lower-trust

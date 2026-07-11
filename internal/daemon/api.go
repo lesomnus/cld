@@ -10,8 +10,10 @@ import (
 	"net/http"
 	urlpkg "net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -46,6 +48,7 @@ func (d *Daemon) api() http.Handler {
 	mux.HandleFunc("POST /down/all", d.handle_down_all)
 	mux.HandleFunc("POST /purge", d.handle_purge)
 	mux.HandleFunc("POST /purge/all", d.handle_purge_all)
+	mux.HandleFunc("POST /auth/token", d.handle_set_token)
 	return mux
 }
 
@@ -96,6 +99,14 @@ func (d *Daemon) scoped_api(self_id string) http.Handler {
 		}
 		d.handle_notify_exited(w, r)
 	})
+	// Setting the injected OAuth token is deliberately reachable from a
+	// container: it is how `cld auth set-token` works from inside a devcontainer
+	// where the user's shell lives. Unlike the other scoped routes this is NOT
+	// self-scoped — the token is global, injected into every session — so any
+	// container that can reach the relay can replace it. That is the same trust
+	// boundary as remote_control itself (which gates this relay's existence); set
+	// remote_control=false to close it entirely.
+	mux.HandleFunc("POST /auth/token", d.handle_set_token)
 	return mux
 }
 
@@ -343,6 +354,60 @@ func (d *Daemon) handle_teardown_all(w http.ResponseWriter, _ *http.Request, pur
 	json.NewEncoder(w).Encode(map[string]any{"results": results})
 }
 
+// maxTokenLen bounds the accepted token body. A Claude Code OAuth token is a
+// couple hundred bytes; this is generous while rejecting a runaway body.
+const maxTokenLen = 8192
+
+// handle_set_token persists the OAuth token the daemon injects into sessions
+// (CLAUDE_CODE_OAUTH_TOKEN). The token is read from the request BODY, never a
+// query param, so it does not land in logs or error strings. It is written to
+// OAuthTokenStorePath with mode 0600 via a temp file + rename so a concurrent
+// read never sees a half-written token. Existing sessions keep their injected
+// token; new or recreated sessions pick this up. Backs `cld auth set-token`.
+func (d *Daemon) handle_set_token(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxTokenLen+1))
+	if err != nil {
+		http.Error(w, "read token", http.StatusBadRequest)
+		return
+	}
+	if len(body) > maxTokenLen {
+		http.Error(w, "token too long", http.StatusRequestEntityTooLarge)
+		return
+	}
+	tok := strings.TrimSpace(string(body))
+	if tok == "" {
+		http.Error(w, "empty token", http.StatusBadRequest)
+		return
+	}
+	// A token is a single opaque line; reject embedded whitespace/control bytes
+	// so a stray file or multi-line paste can't smuggle a second env value.
+	if strings.ContainsAny(tok, " \t\r\n") {
+		http.Error(w, "token contains whitespace", http.StatusBadRequest)
+		return
+	}
+
+	p := d.cfg.OAuthTokenStorePath()
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		http.Error(w, "store token", http.StatusInternalServerError)
+		d.log.Warn("set-token: mkdir failed", slog.String("error", err.Error()))
+		return
+	}
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, []byte(tok), 0o600); err != nil {
+		http.Error(w, "store token", http.StatusInternalServerError)
+		d.log.Warn("set-token: write failed", slog.String("error", err.Error()))
+		return
+	}
+	if err := os.Rename(tmp, p); err != nil {
+		os.Remove(tmp)
+		http.Error(w, "store token", http.StatusInternalServerError)
+		d.log.Warn("set-token: rename failed", slog.String("error", err.Error()))
+		return
+	}
+	d.log.Info("oauth token updated", slog.String("path", p))
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // by_name finds a tracked entry by its display name or its short alias. A
 // display-name match wins over an alias match, so the handle a user sees under
 // NAME always resolves to that same container even if it happens to equal
@@ -450,6 +515,31 @@ func NotifyExited(ctx context.Context, socket string, container string, gen stri
 	}
 	io.Copy(io.Discard, res.Body)
 	return res.Body.Close()
+}
+
+// SetOAuthToken hands the daemon the Claude Code OAuth token to inject into
+// sessions. The token travels in the request body (not the URL) so it stays out
+// of logs. Backs `cld auth set-token`; reachable through the in-container relay
+// so it works from inside a devcontainer.
+func SetOAuthToken(ctx context.Context, socket string, token string) error {
+	hc := NewSocketClient(socket)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://cld/auth/token",
+		strings.NewReader(token))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "text/plain")
+
+	res, err := hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("is `cld serve` running? %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 512))
+		return fmt.Errorf("daemon: %s: %s", res.Status, string(body))
+	}
+	return nil
 }
 
 // RecreateSession asks the daemon to recreate a devcontainer's session.

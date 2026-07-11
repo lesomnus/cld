@@ -8,6 +8,7 @@ import (
 	"archive/tar"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"io/fs"
 	"os"
@@ -106,7 +107,29 @@ func copy_out_global(ctx context.Context, cli *client.Client, ctr string, cfg_di
 			return err
 		}
 	}
-	return nil
+	return sanitize_global_state(l.GlobalDir)
+}
+
+// sanitize_global_state reduces the freshly-fetched .claude.json in the shared
+// global backup to its project-independent keys, so per-project state (keyed by
+// the identical in-container workspace path across every devcontainer) never
+// bleeds between projects on restore. A file that cannot be parsed is dropped
+// rather than stored intact — keeping it would leak the very projects map this
+// strips. A missing file is a no-op.
+func sanitize_global_state(dir string) error {
+	p := filepath.Join(dir, ".claude.json")
+	data, err := os.ReadFile(p)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	stripped, ok := claude.StripProjectState(data)
+	if !ok {
+		return os.Remove(p)
+	}
+	return os.WriteFile(p, stripped, 0o600)
 }
 
 // list_dir lists the immediate entries of a container directory, excluding

@@ -330,20 +330,23 @@ func TestDaemon(t *testing.T) {
 		require.Equal(t, 0, code)
 
 		var project_backup string
-		wait_for(t, 20*time.Second, "backup files", func() bool {
+		wait_for(t, 20*time.Second, "project backup file", func() bool {
 			matches, _ := filepath.Glob(filepath.Join(cfg.DataDir, "projects", "*", "projects", "-workspace", "s1.jsonl"))
 			if len(matches) == 0 {
 				return false
 			}
 			project_backup = matches[0]
-
-			_, err := os.Stat(filepath.Join(cfg.GlobalBackupDir(), ".credentials.json"))
-			return err == nil
+			return true
 		})
 
 		data, err := os.ReadFile(project_backup)
 		require.NoError(t, err)
 		require.Contains(t, string(data), `"cwd":"/workspace"`)
+
+		// Credentials are per-container: the watcher skips .credentials.json, so
+		// the rotating OAuth session never reaches the shared global backup.
+		_, err = os.Stat(filepath.Join(cfg.GlobalBackupDir(), ".credentials.json"))
+		require.True(t, os.IsNotExist(err), "credentials must not be synced to the global backup")
 	})
 	t.Run("restores the backup into a recreated container", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -371,10 +374,12 @@ func TestDaemon(t *testing.T) {
 		require.Equal(t, 0, code)
 		require.Contains(t, out, `"cwd":"/workspace"`)
 
-		out, code, err = dockerx.ExecOutput(t.Context(), cli, ctr2, "", []string{"cat", "/root/.cld/claude/.credentials.json"})
+		// Credentials are NOT restored from the backup (they are per-container
+		// now; auth comes from the injected token), so the backed-up "secret"
+		// must not reappear in the recreated container.
+		out, _, err = dockerx.ExecOutput(t.Context(), cli, ctr2, "", []string{"cat", "/root/.cld/claude/.credentials.json"})
 		require.NoError(t, err)
-		require.Equal(t, 0, code)
-		require.Contains(t, out, "secret")
+		require.NotContains(t, out, "secret")
 
 		// History exists now, so the new session resumes the conversation.
 		wait_for(t, 30*time.Second, "claude resumed in pane", func() bool {
@@ -619,6 +624,80 @@ func TestSessionLifecycle(t *testing.T) {
 	})
 
 	_ = ctr
+}
+
+func TestStoppedListing(t *testing.T) {
+	cli := require_docker(t)
+	pull_image(t, cli)
+	server := fake_release(t, "9.9.9", []byte(fake_claude))
+
+	tmp := t.TempDir()
+	cfg := &config.Config{
+		CacheDir: filepath.Join(tmp, "cache"),
+		DataDir:  filepath.Join(tmp, "data"),
+		Release:  config.ReleaseConfig{BaseURL: server.URL, Channel: "stable", CheckInterval: config.Duration(time.Hour)},
+		Sync:     config.SyncConfig{Debounce: config.Duration(200 * time.Millisecond), FallbackInterval: config.Duration(time.Minute)},
+	}
+	self := build_cld(t)
+	t.Cleanup(func() { exec.Command("tmux", "-S", cfg.TmuxSocketPath(), "kill-server").Run() })
+
+	_, stop := start_daemon(t, cfg, cli, self)
+	started := true
+	defer func() {
+		if started {
+			stop()
+		}
+	}()
+
+	local_folder := fmt.Sprintf("/tmp/proj-%d", time.Now().UnixNano())
+	name := devc.DisplayName(local_folder)
+	ctr := run_devcontainer(t, cli, local_folder)
+
+	wait_for(t, 60*time.Second, "ready", func() bool {
+		it := find_item(must_items(t, cfg), name)
+		return it != nil && it.Status == StatusReady
+	})
+
+	t.Run("a stopped container stays listed as stopped", func(t *testing.T) {
+		_, err := cli.ContainerStop(t.Context(), ctr, client.ContainerStopOptions{})
+		require.NoError(t, err)
+
+		wait_for(t, 20*time.Second, "stopped", func() bool {
+			it := find_item(must_items(t, cfg), name)
+			return it != nil && it.Status == StatusStopped
+		})
+		// The identity resolved while running is preserved.
+		it := find_item(must_items(t, cfg), name)
+		require.NotNil(t, it)
+		require.Equal(t, local_folder, it.LocalFolder)
+	})
+
+	t.Run("a daemon that starts while it is stopped still lists it", func(t *testing.T) {
+		stop()
+		started = false
+		exec.Command("tmux", "-S", cfg.TmuxSocketPath(), "kill-server").Run()
+
+		_, stop2 := start_daemon(t, cfg, cli, self)
+		defer stop2()
+
+		wait_for(t, 20*time.Second, "stopped item seen after restart", func() bool {
+			it := find_item(must_items(t, cfg), name)
+			return it != nil && it.Status == StatusStopped
+		})
+		// Name and folder are recoverable from the container labels alone.
+		it := find_item(must_items(t, cfg), name)
+		require.NotNil(t, it)
+		require.Equal(t, local_folder, it.LocalFolder)
+
+		t.Run("starting it again returns to ready", func(t *testing.T) {
+			_, err := cli.ContainerStart(t.Context(), ctr, client.ContainerStartOptions{})
+			require.NoError(t, err)
+			wait_for(t, 60*time.Second, "ready again", func() bool {
+				it := find_item(must_items(t, cfg), name)
+				return it != nil && it.Status == StatusReady
+			})
+		})
+	})
 }
 
 func TestNameKeying(t *testing.T) {

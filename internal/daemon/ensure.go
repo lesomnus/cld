@@ -56,9 +56,6 @@ func (d *Daemon) ensure_(ctx context.Context, e *entry) error {
 		return fmt.Errorf("inspect: %w", err)
 	}
 	c := insp.Container
-	if c.State == nil || !c.State.Running {
-		return nil
-	}
 
 	labels := map[string]string{}
 	if c.Config != nil {
@@ -67,6 +64,13 @@ func (d *Daemon) ensure_(ctx context.Context, e *entry) error {
 	local_folder := labels[devc.LabelLocalFolder]
 	if local_folder == "" || devc.Ignored(labels, local_folder, d.cfg.Ignore) {
 		d.remove(e)
+		return nil
+	}
+
+	// A stopped container cannot be exec'd into, so it cannot be provisioned;
+	// keep it visible in the listing as stopped with what its labels tell us.
+	if c.State == nil || !c.State.Running {
+		d.mark_stopped(e, labels, local_folder)
 		return nil
 	}
 
@@ -190,6 +194,39 @@ func (d *Daemon) ensure_(ctx context.Context, e *entry) error {
 		slog.String("name", e.item.Name),
 		slog.String("version", version))
 	return nil
+}
+
+// mark_stopped keeps a container that is not running in the listing as stopped.
+// It cannot be exec'd into, so its identity is resolved from labels alone —
+// enough for `cld ls` to show a name and folder. An entry the daemon already
+// provisioned while running keeps everything it resolved; this only fills the
+// gaps for a container first seen stopped, e.g. after a daemon restart. A
+// session the user ended keeps that status, matching stop.
+func (d *Daemon) mark_stopped(e *entry, labels map[string]string, local_folder string) {
+	if e.item.LocalFolder == "" {
+		e.item.LocalFolder = local_folder
+	}
+	if e.item.Name == "" {
+		var config_file []byte
+		if p := labels[devc.LabelConfigFile]; p != "" {
+			config_file, _ = os.ReadFile(p)
+		}
+		// Prefer the devcontainer.json "name"; fall back to the folder name.
+		display := devc.Slug(devc.ProjectName(config_file))
+		if display == "" {
+			display = devc.Slug(devc.DisplayName(local_folder))
+		}
+		if display == "" {
+			display = "devcontainer"
+		}
+		e.item.Name = d.unique_name(e.id, display)
+		e.item.Alias = d.unique_alias(e.id, devc.Alias(display), local_folder)
+	}
+	if e.item.Status != StatusSessionEnded {
+		e.item.Status = StatusStopped
+	}
+	e.item.Error = ""
+	e.publish()
 }
 
 // stop handles a die event: the container stopped but may start again. Tear
@@ -532,6 +569,20 @@ func (d *Daemon) bootstrap_credentials(ctx context.Context, e *entry, id string)
 	return nil
 }
 
+// oauth_token_file resolves the host file whose OAuth token is injected into
+// sessions as CLAUDE_CODE_OAUTH_TOKEN. A token set via `cld auth set-token`
+// (stored under DataDir) takes precedence over the statically configured
+// auth.oauth_token_file, so a container-side login wins over stale config.
+// Returns "" when neither is present, leaving the session to its own credentials.
+func (d *Daemon) oauth_token_file() string {
+	if p := d.cfg.OAuthTokenStorePath(); p != "" {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return d.cfg.Auth.OAuthTokenFile
+}
+
 // seed_file reads a config-dir file, applies seed, and writes it back only if
 // the content changed, owned by the container user.
 func (d *Daemon) seed_file(ctx context.Context, e *entry, id string, name string, mode int64, seed func([]byte) ([]byte, error)) error {
@@ -578,7 +629,7 @@ func (d *Daemon) ensure_session(ctx context.Context, e *entry, id string) error 
 	for _, kv := range d.session_env(e) {
 		argv = append(argv, "--env", kv)
 	}
-	if f := d.cfg.Auth.OAuthTokenFile; f != "" {
+	if f := d.oauth_token_file(); f != "" {
 		argv = append(argv, "--oauth-token-file", f)
 	}
 	argv = append(argv,
