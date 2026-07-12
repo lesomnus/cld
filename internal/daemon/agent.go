@@ -97,30 +97,33 @@ func (d *Daemon) install_gitconfig(ctx context.Context, e *entry, id string) err
 	return nil
 }
 
-// claudeShareDirs are the host ~/.claude customization directories mirrored into
-// a session; settings.json and CLAUDE.md are handled separately.
+// claudeShareDirs are the user-default customization directories mirrored
+// into a session; settings.json and CLAUDE.md are handled separately.
 var claudeShareDirs = []string{"commands", "agents", "output-styles"}
 
-// install_claude_config mirrors the host's shared Claude Code config, staged by
-// `cld it`/`up`, into the session config dir so a container behaves like the
-// host claude: the user settings.json (sanitized — see SanitizeUserSettings —
-// with cld's own keys merged afterwards by seed_file), the personal CLAUDE.md,
-// and the commands/, agents/, and output-styles/ directories. CLAUDE_CONFIG_DIR
-// is the config dir, so claude reads all of these as user-level config. It is a
-// mirror: an item removed on the host is removed in the container too (except
-// settings.json, which cld always seeds). It is best-effort — the caller only
-// logs a failure — so it collects per-item errors and keeps going rather than
-// leaving a half-applied config. Ownership is normalized by the final chown.
+// install_claude_config mirrors cld's own user-default config (see
+// config.Config.UserDefaultDir — a directory owned by cld, not the host's
+// ~/.claude) into the session config dir: the user settings.json (sanitized —
+// see SanitizeUserSettings — with cld's own keys merged afterwards by
+// seed_file), the personal CLAUDE.md, and the commands/, agents/, and
+// output-styles/ directories. CLAUDE_CONFIG_DIR is the config dir, so claude
+// reads all of these as user-level config. It is a mirror: an item removed
+// from user-default is removed in the container too (except settings.json,
+// which cld always seeds). It is best-effort — the caller only logs a failure
+// — so it collects per-item errors and keeps going rather than leaving a
+// half-applied config. Ownership is normalized by the final chown.
 func (d *Daemon) install_claude_config(ctx context.Context, e *entry, id string) error {
 	if !d.cfg.Auth.ShareConfigEnabled() {
 		return nil
 	}
-	share := d.cfg.ClaudeShareDir()
+	share := d.cfg.UserDefaultDir()
 	var errs []error
 
-	// settings.json: host settings as the base seed_file merges cld's keys onto,
-	// after dropping secret/host-only keys. An unparseable host file is skipped
-	// (never written) so it cannot fail the settings seed and block the session.
+	// settings.json: the user-default file as the base seed_file merges cld's
+	// keys onto, after dropping secret/host-only keys (in case it was copied
+	// verbatim from a real ~/.claude/settings.json). An unparseable file is
+	// skipped (never written) so it cannot fail the settings seed and block
+	// the session.
 	if data, err := os.ReadFile(filepath.Join(share, "settings.json")); err == nil {
 		if clean, ok := claude.SanitizeUserSettings(data); ok {
 			if err := dockerx.WriteFile(ctx, d.cli, id, e.cfg_dir, "settings.json", 0o644, e.uid, e.gid, clean); err != nil {
@@ -129,8 +132,9 @@ func (d *Daemon) install_claude_config(ctx context.Context, e *entry, id string)
 		}
 	}
 
-	// CLAUDE.md and the dirs are mirrored: present on the host → install; absent
-	// → remove the container copy (which a restore may have brought back).
+	// CLAUDE.md and the dirs are mirrored: present in user-default → install;
+	// absent → remove the container copy (which a restore may have brought
+	// back).
 	if data, err := os.ReadFile(filepath.Join(share, "CLAUDE.md")); err == nil {
 		if err := dockerx.WriteFile(ctx, d.cli, id, e.cfg_dir, "CLAUDE.md", 0o644, e.uid, e.gid, data); err != nil {
 			errs = append(errs, err)
@@ -146,7 +150,7 @@ func (d *Daemon) install_claude_config(ctx context.Context, e *entry, id string)
 		}
 		src := filepath.Join(share, name)
 		if fi, err := os.Stat(src); err != nil || !fi.IsDir() {
-			continue // host has no such dir; the container's is now cleared
+			continue // user-default has no such dir; the container's is now cleared
 		}
 		if err := dockerx.CopyDirToContainer(ctx, d.cli, id, e.cfg_dir, name, src, e.uid, e.gid); err != nil {
 			errs = append(errs, err)

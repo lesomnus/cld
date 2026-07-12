@@ -17,12 +17,17 @@ how the pieces fit together and how in-container access works.
 | `cld it` / `cld up` / `cld ls` / `cld down` | wherever you invoke them | control-plane clients that talk to the daemon over `<CacheDir>/cld.sock` |
 | `cld install` / `cld uninstall` | host | create/remove the daemon container on the host's Docker; `internal/installer` mirrors the reference `docker-compose.yaml` (drift-tested) |
 
-Key paths (`CacheDir` defaults to `$XDG_CACHE_HOME/cld`, i.e. `~/.cache/cld`):
+Key paths (`CacheDir` defaults to `$XDG_CACHE_HOME/cld`, i.e. `~/.cache/cld`;
+`DataDir` defaults to `$XDG_DATA_HOME/cld`, i.e. `~/.local/share/cld`):
 
 - `<CacheDir>/cld.sock` — daemon control API (HTTP over a unix socket)
 - `<CacheDir>/tmux.sock` — the dedicated tmux server
-- `<CacheDir>/agent.sock`, `<CacheDir>/gitconfig`, `<CacheDir>/claude-config/` —
-  host shares staged for the daemon (ssh-agent, gitconfig, Claude Code config)
+- `<CacheDir>/agent.sock`, `<CacheDir>/gitconfig` — host shares staged for the
+  daemon (ssh-agent, gitconfig)
+- `<DataDir>/user-default/` — cld's own user-default Claude Code config (see
+  `docs/claude-config-layout.md`); not staged from the host, edited directly
+- `<DataDir>/oauth-token`, `<DataDir>/projects/<key>/` — the injected OAuth
+  token and each project's isolated backup
 
 ## Topology
 
@@ -108,9 +113,12 @@ route that fits the deployment:
 
 ## State sync & relays
 
-- **Backups** (`internal/syncer`) — `projects/<enc>` transcripts and global
-  credentials/settings are copied out on change and restored into fresh
-  containers, rewriting the workspace path if it moved.
+- **Backups** (`internal/syncer`) — `projects/<enc>` transcripts and a
+  settings snapshot are copied out on change into that container's own
+  isolated per-project backup dir (never a bucket shared across projects —
+  see `docs/claude-config-layout.md`) and restored into a fresh container of
+  the *same* project, rewriting the workspace path if it moved. Credentials
+  are never backed up.
 - **ssh-agent relay** (`internal/agentx`, `relay_agent`) — the daemon runs
   `cld x agent <sock>` in the container and bridges that socket, over the
   `docker exec` stdio, to the host ssh-agent — so `git push`/commit signing over
@@ -123,18 +131,18 @@ route that fits the deployment:
   is a host-only binary, so `cld` strips it from the forwarded gitconfig
   (`install_gitconfig`) rather than shipping a helper the container cannot run;
   HTTPS remotes therefore rely on whatever the container itself provides.
-- **Config sharing** (`stageClaudeConfig` → `install_claude_config`) — `cld it`/
-  `cld up` stage your host `~/.claude` config into `<CacheDir>/claude-config/`
-  via a file-level allowlist (settings.json, CLAUDE.md, and the
+- **Config sharing** (`install_claude_config`) — the daemon *mirrors*
+  `<DataDir>/user-default/` (settings.json, CLAUDE.md, and the
   commands/agents/output-styles directories; never credentials, `.claude.json`,
-  or history), and the daemon *mirrors* it into each session's config dir —
-  installing what is present, removing what the host dropped. Since
-  `CLAUDE_CONFIG_DIR` is that dir, claude reads them as user-level config.
-  `settings.json` is the base cld's own keys merge onto, after
-  `SanitizeUserSettings` drops secret/host-only keys (`env`, the
-  apiKeyHelper/aws*/otel helpers, project-MCP auto-trust) — and skips it entirely
-  if it is not a JSON object, so a malformed host file can never fail the seed.
-  Off with `auth.share_config: false`.
+  or history) into each session's config dir on every provision — installing
+  what is present, removing what user-default dropped. This is a directory
+  cld owns, not your host's `~/.claude` — cld never reads or writes that;
+  you populate user-default directly. Since `CLAUDE_CONFIG_DIR` is that dir,
+  claude reads them as user-level config. `settings.json` is the base cld's
+  own keys merge onto, after `SanitizeUserSettings` drops secret/host-only
+  keys (`env`, the apiKeyHelper/aws*/otel helpers, project-MCP auto-trust) —
+  and skips it entirely if it is not a JSON object, so a malformed file can
+  never fail the seed. Off with `auth.share_config: false`.
 
 The same generic relay carries the control API into containers.
 

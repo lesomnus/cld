@@ -11,21 +11,27 @@ type BackupClass int
 const (
 	// BackupSkip is regenerable or live-process state.
 	BackupSkip BackupClass = iota
-	// BackupGlobal is project-independent state: credentials, settings,
-	// .claude.json, CLAUDE.md, agents, skills, and so on.
+	// BackupGlobal is project-independent-looking state: settings,
+	// .claude.json, CLAUDE.md, agents, skills, and so on. Despite the name it
+	// is backed up per project (see syncer.Layout), never shared across
+	// containers — see global_entries.
 	BackupGlobal
 	// BackupProject is per-project state: transcripts and file history.
 	BackupProject
 )
 
 // global_entries are the config-dir entries that hold genuinely
-// project-independent state and so belong in the shared global backup that
-// every devcontainer restores from. It is an allowlist on purpose: the global
-// backup is one directory shared by all containers (see Layout.GlobalDir), so
-// anything not named here defaults to BackupSkip rather than bleeding across
-// containers. A denylist would silently sweep every new Claude Code directory
-// (jobs, tasks, backups, history.jsonl, caches, cld's own daemon files, …) into
-// that shared bucket the moment upstream adds it; an allowlist stays closed.
+// project-independent-looking state, distinguishing it from BackupProject
+// (transcripts, file history). It is an allowlist on purpose: anything not
+// named here defaults to BackupSkip rather than being backed up at all. A
+// denylist would silently sweep every new Claude Code directory (jobs, tasks,
+// backups, history.jsonl, caches, cld's own daemon files, …) into the backup
+// the moment upstream adds it; an allowlist stays closed.
+//
+// The caller decides where a BackupGlobal-classified file lands — cld's
+// syncer package stores it under the same isolated per-project backup dir as
+// BackupProject state, never a bucket shared across containers, so a change
+// inside one project's container can never bleed into another's on restore.
 //
 // The head (first path segment) is matched, so both root files
 // (".credentials.json") and whole trees ("agents/foo.md") are covered.
@@ -51,11 +57,10 @@ var global_entries = map[string]bool{
 	"plugins":       true,
 }
 
-// Classify classifies a path relative to the config dir. project state
-// (transcripts, file history) is keyed per project; the global allowlist above
-// is shared across containers; everything else — live-process state, caches,
-// background-session records, cld's own runtime files — is skipped so it never
-// reaches a backup and never bleeds between devcontainers.
+// Classify classifies a path relative to the config dir into project state
+// (transcripts, file history) vs. global-looking state (see global_entries);
+// everything else — live-process state, caches, background-session records,
+// cld's own runtime files — is skipped so it never reaches a backup.
 func Classify(rel string) BackupClass {
 	rel = path.Clean(strings.TrimPrefix(rel, "./"))
 	if rel == "." || rel == "" {

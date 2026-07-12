@@ -39,13 +39,12 @@ func collect(t *testing.T, r io.Reader) (map[string]string, map[string]string) {
 
 func TestWriteBackup(t *testing.T) {
 	l := Layout{
-		GlobalDir:  filepath.Join(t.TempDir(), "global"),
 		ProjectDir: filepath.Join(t.TempDir(), "project"),
 	}
-	require.NoError(t, os.MkdirAll(l.GlobalDir, 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(l.ProjectDir, settingsDir), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(l.ProjectDir, "projects", "-old"), 0o755))
 
-	require.NoError(t, os.WriteFile(filepath.Join(l.GlobalDir, ".credentials.json"), []byte("secret"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(l.ProjectDir, settingsDir, "settings.json"), []byte("secret"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(l.ProjectDir, "projects", "-old", "s1.jsonl"),
 		[]byte(`{"cwd":"/old/path","msg":"hi"}`), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(l.ProjectDir, meta_name),
@@ -62,8 +61,8 @@ func TestWriteBackup(t *testing.T) {
 
 	files, _ := collect(t, &buf)
 
-	t.Run("global files restored", func(t *testing.T) {
-		require.Equal(t, "secret", files[".claude/.credentials.json"])
+	t.Run("settings files restored", func(t *testing.T) {
+		require.Equal(t, "secret", files[".claude/settings.json"])
 	})
 	t.Run("meta file is not restored", func(t *testing.T) {
 		_, ok := files[".claude/"+meta_name]
@@ -79,18 +78,18 @@ func TestWriteBackup(t *testing.T) {
 	})
 }
 
-func TestSanitizeGlobalState(t *testing.T) {
-	t.Run("strips the projects map from the global .claude.json", func(t *testing.T) {
+func TestSanitizeSettingsState(t *testing.T) {
+	t.Run("strips the projects map from the settings .claude.json", func(t *testing.T) {
 		dir := t.TempDir()
 		p := filepath.Join(dir, ".claude.json")
 		require.NoError(t, os.WriteFile(p,
 			[]byte(`{"userID":"u1","projects":{"/workspace":{"history":[{"display":"leak"}]}}}`), 0o600))
 
-		require.NoError(t, sanitize_global_state(dir))
+		require.NoError(t, sanitize_settings_state(dir))
 
 		data, err := os.ReadFile(p)
 		require.NoError(t, err)
-		require.NotContains(t, string(data), "projects", "per-project state must not reach the shared backup")
+		require.NotContains(t, string(data), "projects", "conversation state belongs in the transcripts, not here")
 		require.NotContains(t, string(data), "leak")
 		require.Contains(t, string(data), "u1")
 	})
@@ -99,13 +98,13 @@ func TestSanitizeGlobalState(t *testing.T) {
 		p := filepath.Join(dir, ".claude.json")
 		require.NoError(t, os.WriteFile(p, []byte("not json"), 0o600))
 
-		require.NoError(t, sanitize_global_state(dir))
+		require.NoError(t, sanitize_settings_state(dir))
 
 		_, err := os.Stat(p)
 		require.True(t, os.IsNotExist(err), "an intact, potentially leaky file must not remain")
 	})
 	t.Run("a missing file is a no-op", func(t *testing.T) {
-		require.NoError(t, sanitize_global_state(t.TempDir()))
+		require.NoError(t, sanitize_settings_state(t.TempDir()))
 	})
 }
 

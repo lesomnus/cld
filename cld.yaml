@@ -2,7 +2,8 @@
 
 # Directory for disposable data: binary cache and sockets.
 #cache_dir: ~/.cache/cld
-# Directory for data that must not be lost: conversation backups.
+# Directory for data that must not be lost: conversation backups and your
+# user-default Claude Code config (see auth.share_config below).
 #data_dir: ~/.local/share/cld
 
 # Glob patterns matched against the host-side workspace path
@@ -25,15 +26,16 @@ auth:
   # container code.
   #forward_agent: true
 
-  # Copy your host-level Claude Code config into each session so a devcontainer
-  # behaves like your host claude: ~/.claude/settings.json, the personal
-  # CLAUDE.md, and the commands/, agents/, and output-styles/ directories.
-  # settings.json is sanitized first — secret/host-only keys are dropped so they
-  # never cross into the container (env, the apiKeyHelper/aws*/otel auth helpers,
-  # the project-MCP auto-trust flags); model, permissions, hooks and presentation
-  # keys carry over. The credentials file, project history, and runtime state are
-  # never copied. Staged on `cld it`/`cld up`. Enabled by default; set false to
-  # keep containers on cld's minimal seed only.
+  # Install cld's own user-default Claude Code config into each session:
+  # <data_dir>/user-default/settings.json, CLAUDE.md, and the commands/,
+  # agents/, and output-styles/ directories. This is a directory cld owns, not
+  # your host's ~/.claude — cld never reads or writes that; populate
+  # user-default by editing files there directly. settings.json is sanitized
+  # first — secret/host-only keys are dropped so they never cross into the
+  # container (env, the apiKeyHelper/aws*/otel auth helpers, the project-MCP
+  # auto-trust flags); the rest carries over. Credentials, project history,
+  # and runtime state are never propagated this way. Enabled by default; set
+  # false to keep containers on cld's minimal seed only.
   #share_config: true
 
 release:

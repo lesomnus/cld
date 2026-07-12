@@ -43,7 +43,6 @@ func (b *lineBuffer) String() string {
 
 func (d *Daemon) layout(e *entry) syncer.Layout {
 	return syncer.Layout{
-		GlobalDir:  d.cfg.GlobalBackupDir(),
 		ProjectDir: d.cfg.ProjectBackupDir(d.backup_key(e)),
 	}
 }
@@ -73,7 +72,7 @@ func short_hash(s string) string {
 // losing flags when a burst arrives.
 func (e *entry) mark(p dirty) {
 	e.dirty_mu.Lock()
-	e.dirty.global = e.dirty.global || p.global
+	e.dirty.settings = e.dirty.settings || p.settings
 	e.dirty.project = e.dirty.project || p.project
 	e.dirty_mu.Unlock()
 
@@ -111,35 +110,34 @@ func (d *Daemon) sync_loop(ctx context.Context, e *entry) {
 		}
 
 		p := e.take()
-		if !p.global && !p.project {
+		if !p.settings && !p.project {
 			continue
 		}
 		e.mbox.post(func() { d.copy_out(context.WithoutCancel(ctx), e, p) })
 	}
 }
 
-// copy_out snapshots container state into the host backup. It runs only on
-// the entry's worker (serialized with provisioning and teardown), and takes
-// the shared global lock so two containers never write the global dir at
-// once.
+// copy_out snapshots container state into the host's per-project backup dir.
+// It runs only on the entry's worker (serialized with provisioning and
+// teardown), and takes the project's lock so two containers sharing a backup
+// key never write it at once. Settings-like state (settings.json, .claude.json,
+// skills/, plugins/, ...) is copied out here too, but always into this SAME
+// isolated dir — never a bucket shared across projects — so it can only ever
+// affect this project's own future restores. The host's real ~/.claude,
+// mirrored in on every provision via install_claude_config, is still the
+// authoritative source for the parts of that state a user sets manually.
 func (d *Daemon) copy_out(ctx context.Context, e *entry, p dirty) {
-	if !p.global && !p.project {
+	if !p.settings && !p.project {
 		return
 	}
 
-	// Serialize with any other container writing the same backup: the global
-	// dir is shared by all, the project dir by same-keyed (same-name) ones.
-	if p.project {
-		l := d.proj_locks.get(d.backup_key(e))
-		l.Lock()
-		defer l.Unlock()
-	}
-	if p.global {
-		d.global_mu.Lock()
-		defer d.global_mu.Unlock()
-	}
+	// Serialize with any other container writing the same (same-keyed /
+	// same-name) project backup dir.
+	l := d.proj_locks.get(d.backup_key(e))
+	l.Lock()
+	defer l.Unlock()
 
-	err := syncer.CopyOut(ctx, d.cli, e.id, e.cfg_dir, d.layout(e), e.item.Workspace, p.global, p.project)
+	err := syncer.CopyOut(ctx, d.cli, e.id, e.cfg_dir, d.layout(e), e.item.Workspace, p.settings, p.project)
 	if err != nil && ctx.Err() == nil {
 		d.log.Warn("copy-out failed",
 			slog.String("name", e.item.Name), slog.String("error", err.Error()))
@@ -237,7 +235,7 @@ func (d *Daemon) watch_once(ctx context.Context, e *entry, id string) (clean boo
 		}
 		switch claude.Classify(line) {
 		case claude.BackupGlobal:
-			e.mark(dirty{global: true})
+			e.mark(dirty{settings: true})
 		case claude.BackupProject:
 			e.mark(dirty{project: true})
 		}
@@ -271,7 +269,7 @@ func (d *Daemon) poll_container(ctx context.Context, e *entry) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			e.mark(dirty{global: true, project: true})
+			e.mark(dirty{settings: true, project: true})
 		}
 	}
 }

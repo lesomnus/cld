@@ -8,16 +8,22 @@ one of three buckets:
 
 | Bucket | Backup location | Shared across devcontainers? |
 |---|---|---|
-| **Project** | `projects/<name>/` (keyed by devcontainer name) | only same-named containers |
-| **Global** | `global/` (single dir, no key) | **yes — every container** |
+| **Project** | `<project-backup>/projects/<enc>/`, `<project-backup>/file-history/` | only same-named containers |
+| **Global** | `<project-backup>/settings/` | only same-named containers |
 | **Skip** | not backed up | n/a |
 
-Because the **Global** bucket is one directory shared by every container, the
-classifier is an **allowlist**: only entries explicitly named in
-`global_entries` go Global; anything else defaults to **Skip**. This keeps new
-Claude Code directories from silently bleeding across containers the moment
-upstream adds them. The `✓ allow (global)` column below marks exactly the
-entries on that allowlist.
+`<project-backup>` is `internal/syncer.Layout.ProjectDir`, keyed by
+devcontainer name (`Daemon.backup_key`) — the **same** directory for both
+buckets. Despite the name, **Global is never a bucket shared across every
+devcontainer**: it is a project-independent-*looking* category of state
+(settings, not conversations) that still lands in that project's own isolated
+backup, so a change made inside one project's container can only ever affect
+that project's own future restores — never another project's. The classifier
+is still an **allowlist** — only entries explicitly named in `global_entries`
+go Global; anything else defaults to **Skip** — but that is to keep new Claude
+Code directories from silently entering the backup at all the moment upstream
+adds them, not to guard a shared bucket. The `✓ allow (global)` column below
+marks exactly the entries on that allowlist.
 
 ## Entries produced by Claude Code
 
@@ -83,16 +89,22 @@ from stdin; works from inside a devcontainer over the control-API relay) or via
 
 ## Notes
 
-- **Only the 8 checked entries are shared** across every devcontainer via the
-  global backup. Everything else is either isolated per-project (transcripts,
-  file history), injected per session (the OAuth token), or not backed up at all.
-- If stricter isolation is wanted, the allowlist can be trimmed — e.g. down to
-  just `.claude.json`/`settings.json` (enough for a usable fresh container, with
-  auth coming from the injected token). `agents/commands/skills/output-styles/
-  plugins/CLAUDE.md` are on the list only because they are user-level
-  customizations meant to apply everywhere; drop any that should instead be
-  project-scoped or per-container.
+- **Only the 8 checked entries are backed up at all** beyond transcripts/file
+  history, and even those land in the same isolated per-project backup dir —
+  never a bucket shared across every devcontainer. A container is only ever
+  seeded from its *own* project's prior backup (same devcontainer name), never
+  from another project's.
+- cld's own **user-default** dir (`Config.UserDefaultDir`, under `DataDir` —
+  see `docs/architecture.md`) is the actual source of truth for
+  `settings.json`/`CLAUDE.md`/`agents/`/`commands/`/`output-styles/`, and it is
+  **not** the host's `~/.claude` — cld never reads or writes that. The daemon
+  mirrors user-default into every session on each provision
+  (`install_claude_config`), sanitized and overwriting whatever a restore
+  brought back. So editing files under user-default is the supported way to
+  change those five for every project; a change made inside a container is
+  backed up (for that project's own next restore) but does not become the new
+  baseline for other projects.
 - This list reflects what we currently know Claude Code writes. Since the
   classifier defaults unknown entries to **Skip**, a newly added Claude Code
-  directory is safely excluded from the shared backup until it is deliberately
-  added to `global_entries`.
+  directory is safely excluded from the backup until it is deliberately added
+  to `global_entries`.

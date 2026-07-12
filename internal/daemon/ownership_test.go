@@ -126,10 +126,10 @@ func TestRestoreOwnsProjectsForNonRootUser(t *testing.T) {
 	require.Equalf(t, 0, code, "node must be able to create a new transcript in projects/%s: %s", enc, out)
 }
 
-// TestShareClaudeConfig verifies host Claude Code config staged by the client is
-// installed into a non-root session: settings.json (host value kept, cld's key
-// merged, host-only apiKeyHelper dropped), the personal CLAUDE.md, and a custom
-// command — all owned by the container user.
+// TestShareClaudeConfig verifies cld's user-default Claude Code config is
+// installed into a non-root session: settings.json (user-default value kept,
+// cld's key merged, host-only apiKeyHelper dropped), the personal CLAUDE.md,
+// and a custom command — all owned by the container user.
 func TestShareClaudeConfig(t *testing.T) {
 	cli := require_docker(t)
 	pull_ref(t, cli, nonroot_image)
@@ -151,9 +151,9 @@ func TestShareClaudeConfig(t *testing.T) {
 		},
 	}
 
-	// Stage the host config exactly as `cld it`/`up` would, including keys that
-	// must be sanitized out.
-	share := cfg.ClaudeShareDir()
+	// Populate cld's user-default dir exactly as a user would, including keys
+	// that must be sanitized out.
+	share := cfg.UserDefaultDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(share, "commands"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(share, "settings.json"),
 		[]byte(`{"apiKeyHelper":"/host/bin/key","env":{"ANTHROPIC_API_KEY":"sk-secret"},"enableAllProjectMcpServers":true,"model":"opus"}`), 0o644))
@@ -190,14 +190,14 @@ func TestShareClaudeConfig(t *testing.T) {
 		return it != nil && it.Status == StatusReady
 	})
 
-	// settings.json: host value kept, cld's cleanupPeriodDays merged in, and the
-	// host-only apiKeyHelper stripped.
+	// settings.json: user-default value kept, cld's cleanupPeriodDays merged in,
+	// and the host-only apiKeyHelper stripped.
 	data, ok, err := dockerx.ReadFile(t.Context(), cli, c1, cfgDir+"/settings.json")
 	require.NoError(t, err)
 	require.True(t, ok, "settings.json should exist")
 	var settings map[string]any
 	require.NoError(t, json.Unmarshal(data, &settings))
-	require.Equal(t, "opus", settings["model"], "host setting must propagate")
+	require.Equal(t, "opus", settings["model"], "user-default setting must propagate")
 	require.Contains(t, settings, "cleanupPeriodDays", "cld's seed must merge in")
 	require.NotContains(t, settings, "apiKeyHelper", "host-only apiKeyHelper must be stripped")
 	require.NotContains(t, settings, "env", "env (secret-bearing) must be stripped")
@@ -221,8 +221,8 @@ func TestShareClaudeConfig(t *testing.T) {
 	require.NoError(t, err)
 	require.Equalf(t, 0, code, "node must own the propagated commands/ dir: %s", out)
 
-	// Mirror: a command and the CLAUDE.md removed on the host are removed in the
-	// container on the next install (driven directly here).
+	// Mirror: a command and the CLAUDE.md removed from user-default are removed
+	// in the container on the next install (driven directly here).
 	require.NoError(t, os.Remove(filepath.Join(share, "commands", "hi.md")))
 	require.NoError(t, os.Remove(filepath.Join(share, "CLAUDE.md")))
 	e := d.lookup(c1)
@@ -231,8 +231,8 @@ func TestShareClaudeConfig(t *testing.T) {
 
 	_, ok, err = dockerx.ReadFile(t.Context(), cli, c1, cfgDir+"/commands/hi.md")
 	require.NoError(t, err)
-	require.False(t, ok, "a command removed on the host must be removed in the container")
+	require.False(t, ok, "a command removed from user-default must be removed in the container")
 	_, ok, err = dockerx.ReadFile(t.Context(), cli, c1, cfgDir+"/CLAUDE.md")
 	require.NoError(t, err)
-	require.False(t, ok, "a CLAUDE.md removed on the host must be removed in the container")
+	require.False(t, ok, "a CLAUDE.md removed from user-default must be removed in the container")
 }

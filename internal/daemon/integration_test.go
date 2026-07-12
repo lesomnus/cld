@@ -351,9 +351,11 @@ func TestDaemon(t *testing.T) {
 		require.Contains(t, string(data), `"cwd":"/workspace"`)
 
 		// Credentials are per-container: the watcher skips .credentials.json, so
-		// the rotating OAuth session never reaches the shared global backup.
-		_, err = os.Stat(filepath.Join(cfg.GlobalBackupDir(), ".credentials.json"))
-		require.True(t, os.IsNotExist(err), "credentials must not be synced to the global backup")
+		// the rotating OAuth session never reaches even this project's own
+		// settings backup.
+		matches, err := filepath.Glob(filepath.Join(cfg.DataDir, "projects", "*", "settings", ".credentials.json"))
+		require.NoError(t, err)
+		require.Empty(t, matches, "credentials must not be synced to the settings backup")
 	})
 	t.Run("restores the backup into a recreated container", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

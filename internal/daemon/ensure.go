@@ -238,7 +238,7 @@ func (d *Daemon) stop(ctx context.Context, e *entry) {
 		e.watch_stop = nil
 	}
 	if e.item.Workspace != "" {
-		d.copy_out(ctx, e, dirty{global: true, project: true})
+		d.copy_out(ctx, e, dirty{settings: true, project: true})
 	}
 	if e.item.Name != "" {
 		d.tmux.KillSession(ctx, devc.SessionName(e.item.Name))
@@ -510,13 +510,11 @@ func (d *Daemon) prepare_state(ctx context.Context, e *entry, id string) error {
 			l := d.layout(e)
 			pl := d.proj_locks.get(d.backup_key(e))
 			pl.Lock()
-			d.global_mu.RLock()
 			has := syncer.HasBackup(l)
 			var restore_err error
 			if has {
 				restore_err = syncer.CopyIn(ctx, d.cli, id, e.cfg_dir, l, e.item.Workspace, e.uid, e.gid)
 			}
-			d.global_mu.RUnlock()
 			pl.Unlock()
 			if restore_err != nil {
 				return fmt.Errorf("restore: %w", restore_err)

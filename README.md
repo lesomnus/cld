@@ -171,17 +171,26 @@ host-only `credential.helper` (e.g. `gopass`, `osxkeychain`) is *not* forwarded
 — it wouldn't exist in the container — so HTTPS auth falls back to whatever the
 container itself provides. Turn the agent off with `auth.forward_agent: false`.
 
-**Your claude config comes with you.** cld copies your host-level Claude Code
-config into each session so a devcontainer feels like your host claude:
-`~/.claude/settings.json`, your personal `CLAUDE.md`, and your `commands/`,
-`agents/`, and `output-styles/`. `settings.json` is sanitized first — its
-secret- and host-only keys are dropped so they never cross into the container
-(`env`, the `apiKeyHelper`/`aws*`/`otel` auth helpers, the project-MCP
-auto-trust flags), like the git credential helper above; your model,
-permissions, hooks and presentation keys carry over. The credentials file,
-project history, and runtime state are never copied. It is a mirror, refreshed
-on each `cld it` / `cld up` (removing what you removed on the host); turn it off
-with `auth.share_config: false`.
+**Your claude config comes with you.** cld installs its own **user-default**
+Claude Code config into each session so a devcontainer feels the same
+everywhere: `settings.json`, your personal `CLAUDE.md`, and your `commands/`,
+`agents/`, and `output-styles/`. This is a directory cld owns
+(`~/.local/share/cld/user-default/` by default) — **not** your host's
+`~/.claude`; cld never reads or writes that. Populate it by editing files
+there directly (copy in whatever you want propagated). `settings.json` is
+sanitized first — its secret- and host-only keys are dropped so they never
+cross into the container (`env`, the `apiKeyHelper`/`aws*`/`otel` auth
+helpers, the project-MCP auto-trust flags), like the git credential helper
+above; the rest of what you put there (model, permissions, hooks, presentation
+keys) carries over. Credentials, project history, and runtime state are never
+propagated this way. It is a mirror, refreshed on each `cld it` / `cld up`
+(removing what you removed from user-default); turn it off with
+`auth.share_config: false`.
+
+A change made *inside* a container (e.g. installing a skill) is still backed
+up — but only into that project's own isolated backup dir, restored on that
+project's next `cld up` after a `cld down`. It never becomes the new baseline
+for other projects; only editing user-default does that.
 
 ## Commands
 
@@ -279,9 +288,10 @@ To drop the `~/.claude` bind mount from your devcontainers entirely, point
 `auth.oauth_token_file` at a file holding a token from `claude setup-token`;
 cld injects it so a fresh container authenticates with no interactive login.
 
-Your host-level Claude Code config (settings, `CLAUDE.md`, commands, agents,
-output styles) is propagated into every session by default; see
-`auth.share_config` in `cld.yaml` to disable it.
+cld's own user-default Claude Code config (settings, `CLAUDE.md`, commands,
+agents, output styles — see "Your claude config comes with you" above) is
+propagated into every session by default; see `auth.share_config` in
+`cld.yaml` to disable it.
 
 See `plan.md` for the design and roadmap.
 

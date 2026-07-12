@@ -24,10 +24,10 @@ func (d *Daemon) down(ctx context.Context, e *entry) error {
 }
 
 // purge stops and removes the devcontainer and everything that outlives a plain
-// down: its named (and anonymous) volumes and the host-side conversation backup,
-// so no trace is left on the engine or on disk. The shared global backup dir
-// (credentials/settings, used by every project) is deliberately kept. Because
-// that history is being destroyed, purge skips the final backup a down takes.
+// down: its named (and anonymous) volumes and its whole host-side backup dir
+// (conversations and the project's own settings snapshot), so no trace is left
+// on the engine or on disk. Because that history is being destroyed, purge
+// skips the final backup a down takes.
 func (d *Daemon) purge(ctx context.Context, e *entry) error {
 	return d.remove_devcontainer(ctx, e, true)
 }
@@ -52,7 +52,7 @@ func (d *Daemon) remove_devcontainer(ctx context.Context, e *entry, purge bool) 
 	// out of it, so it must run before removal. A purge deletes that backup, so
 	// it does not bother taking one.
 	if !purge && e.item.Workspace != "" {
-		d.copy_out(ctx, e, dirty{global: true, project: true})
+		d.copy_out(ctx, e, dirty{settings: true, project: true})
 	}
 	if e.watch_stop != nil {
 		e.watch_stop()
@@ -96,8 +96,9 @@ func (d *Daemon) remove_devcontainer(ctx context.Context, e *entry, purge bool) 
 				errs = append(errs, fmt.Errorf("remove volume %s: %w", name, err))
 			}
 		}
-		// Wipe this project's host-side conversation backup. The global dir is
-		// shared by every project (credentials/settings), so it is left alone.
+		// Wipe this project's whole host-side backup dir: conversations and
+		// its own settings snapshot. Nothing here is shared with another
+		// project's backup, so this cannot affect any other container.
 		if dir := d.cfg.ProjectBackupDir(d.backup_key(e)); dir != "" {
 			if err := os.RemoveAll(dir); err != nil {
 				errs = append(errs, fmt.Errorf("remove backup %s: %w", dir, err))

@@ -1,7 +1,11 @@
 // Package syncer copies Claude Code state between containers and host-side
-// backups. Backups are split: global/ holds project-independent state
-// (credentials, settings) so a first-ever container of any project starts
-// authenticated; projects/<key>/ holds transcripts and file history.
+// backups. A backup is keyed by project (see Daemon.backup_key) and holds two
+// kinds of state: settings/ has the project-independent-looking files
+// (settings.json, .claude.json, CLAUDE.md, agents/, commands/, skills/,
+// output-styles/, plugins/) and projects/+file-history/ have the transcripts.
+// Both live under the SAME per-project dir, never a bucket shared across
+// projects, so a change made inside one project's container can never bleed
+// into another project's container on restore.
 package syncer
 
 import (
@@ -23,11 +27,17 @@ import (
 	"github.com/moby/moby/client"
 )
 
-// Layout locates one container's backup on the host.
+// Layout locates one container's isolated, per-project backup on the host.
 type Layout struct {
-	GlobalDir  string
 	ProjectDir string
 }
+
+// settingsDir is the ProjectDir subdirectory holding the project's own copy
+// of the project-independent-looking Claude Code files (see package doc).
+// It is a subdirectory (rather than ProjectDir's root) so it cannot collide
+// with the "projects", "file-history", and meta_name entries also stored
+// there.
+const settingsDir = "settings"
 
 // Meta records what the project backup was taken from, so a restore into a
 // container with a different workspace path can migrate the encoded
@@ -41,32 +51,30 @@ const meta_name = "cld-meta.json"
 
 // HasBackup reports whether there is anything to restore.
 func HasBackup(l Layout) bool {
-	for _, d := range []string{l.GlobalDir, l.ProjectDir} {
-		entries, err := os.ReadDir(d)
-		if err == nil && len(entries) > 0 {
-			return true
-		}
-	}
-	return false
+	entries, err := os.ReadDir(l.ProjectDir)
+	return err == nil && len(entries) > 0
 }
 
-// CopyOut snapshots container state into the host backup.
+// CopyOut snapshots container state into the host's per-project backup dir.
 // cfg_dir is the absolute path of the config dir inside the container.
-func CopyOut(ctx context.Context, cli *client.Client, ctr string, cfg_dir string, l Layout, workspace string, global, project bool) error {
-	if project {
-		if err := copy_out_project(ctx, cli, ctr, cfg_dir, l, workspace); err != nil {
+// settings selects the project-independent-looking files; transcripts
+// selects the per-conversation state. Both are written under the same
+// Layout.ProjectDir — see the package doc for why.
+func CopyOut(ctx context.Context, cli *client.Client, ctr string, cfg_dir string, l Layout, workspace string, settings, transcripts bool) error {
+	if transcripts {
+		if err := copy_out_transcripts(ctx, cli, ctr, cfg_dir, l, workspace); err != nil {
 			return err
 		}
 	}
-	if global {
-		if err := copy_out_global(ctx, cli, ctr, cfg_dir, l); err != nil {
+	if settings {
+		if err := copy_out_settings(ctx, cli, ctr, cfg_dir, l); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func copy_out_project(ctx context.Context, cli *client.Client, ctr string, cfg_dir string, l Layout, workspace string) error {
+func copy_out_transcripts(ctx context.Context, cli *client.Client, ctr string, cfg_dir string, l Layout, workspace string) error {
 	enc := claude.EncodeProjectPath(workspace)
 
 	// fetch roots entries at their container basename, so "projects/<enc>" is
@@ -90,33 +98,38 @@ func copy_out_project(ctx context.Context, cli *client.Client, ctr string, cfg_d
 	return os.WriteFile(filepath.Join(l.ProjectDir, meta_name), meta, 0o644)
 }
 
-// copy_out_global copies only the global top-level entries of the config dir,
-// fetching each one individually so the (potentially huge) projects/ and
-// file-history/ trees are never streamed out just to be discarded.
-func copy_out_global(ctx context.Context, cli *client.Client, ctr string, cfg_dir string, l Layout) error {
+// copy_out_settings copies only the BackupGlobal-classified top-level entries
+// of the config dir into this project's own settingsDir, fetching each one
+// individually so the (potentially huge) projects/ and file-history/ trees
+// are never streamed out just to be discarded.
+func copy_out_settings(ctx context.Context, cli *client.Client, ctr string, cfg_dir string, l Layout) error {
 	names, err := list_dir(ctx, cli, ctr, cfg_dir)
 	if err != nil {
 		return err
 	}
 
+	dst := filepath.Join(l.ProjectDir, settingsDir)
 	for _, name := range names {
 		if claude.Classify(name) != claude.BackupGlobal {
 			continue
 		}
-		if err := fetch(ctx, cli, ctr, path.Join(cfg_dir, name), l.GlobalDir); err != nil {
+		if err := fetch(ctx, cli, ctr, path.Join(cfg_dir, name), dst); err != nil {
 			return err
 		}
 	}
-	return sanitize_global_state(l.GlobalDir)
+	return sanitize_settings_state(dst)
 }
 
-// sanitize_global_state reduces the freshly-fetched .claude.json in the shared
-// global backup to its project-independent keys, so per-project state (keyed by
-// the identical in-container workspace path across every devcontainer) never
-// bleeds between projects on restore. A file that cannot be parsed is dropped
-// rather than stored intact — keeping it would leak the very projects map this
-// strips. A missing file is a no-op.
-func sanitize_global_state(dir string) error {
+// sanitize_settings_state reduces the freshly-fetched .claude.json in this
+// project's settingsDir to its project-independent keys, dropping the
+// per-project "projects" map (which claude itself keys by the in-container
+// workspace path, e.g. "/workspace", regardless of the host-side project). It
+// is otherwise redundant with the transcripts already stored alongside it, and
+// stripping keeps this file's job narrow: the account/UI-level settings this
+// project's container had, not a second copy of its conversation state. A
+// file that cannot be parsed is dropped rather than stored intact — keeping
+// it would leak the very projects map this strips. A missing file is a no-op.
+func sanitize_settings_state(dir string) error {
 	p := filepath.Join(dir, ".claude.json")
 	data, err := os.ReadFile(p)
 	if err != nil {
@@ -160,9 +173,9 @@ func list_dir(ctx context.Context, cli *client.Client, ctr string, dir string) (
 // fetch copies a container path out and extracts it under dst_root, rooted at
 // the source's basename (as the Docker archive endpoint names it). So a
 // directory "projects/<enc>" fetched into ProjectDir/projects lands at
-// ProjectDir/projects/<enc>/..., and a single file ".credentials.json"
-// fetched into GlobalDir lands at GlobalDir/.credentials.json. A missing
-// source is not an error.
+// ProjectDir/projects/<enc>/..., and a single file "settings.json" fetched
+// into ProjectDir/settings lands at ProjectDir/settings/settings.json. A
+// missing source is not an error.
 func fetch(ctx context.Context, cli *client.Client, ctr string, src string, dst_root string) error {
 	res, err := cli.CopyFromContainer(ctx, ctr, client.CopyFromContainerOptions{SourcePath: src})
 	if err != nil {

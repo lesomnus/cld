@@ -92,9 +92,14 @@ func (e *entry) snapshot() Item {
 	return Item{ID: e.id}
 }
 
+// dirty accumulates which parts of a container's config dir changed since
+// the last copy-out. Both kinds land in the SAME isolated per-project backup
+// dir, keyed by backup_key (see copy_out) — never a bucket shared across
+// projects — so settings/skills/etc. changed inside one project's container
+// can only ever affect that project's own backup.
 type dirty struct {
-	global  bool
-	project bool
+	settings bool
+	project  bool
 }
 
 type Daemon struct {
@@ -111,9 +116,6 @@ type Daemon struct {
 	base_ctx context.Context // long-lived; parents watcher/sync goroutines
 	wg       sync.WaitGroup  // tracks worker goroutines
 
-	// global_mu guards the shared global backup dir, which every container
-	// reads (restore) and writes (copy-out).
-	global_mu sync.RWMutex
 	// proj_locks serializes access to a project backup dir, which containers
 	// that share a backup key (same devcontainer name) would otherwise write
 	// concurrently.

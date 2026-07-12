@@ -58,17 +58,17 @@ type AuthConfig struct {
 	// an unset value still defaults to true.
 	RemoteControl *bool `yaml:"remote_control"`
 
-	// ShareConfig copies your host-level Claude Code config into each session,
-	// so a devcontainer behaves like your host claude: ~/.claude/settings.json,
-	// the personal CLAUDE.md, and the commands/, agents/, and output-styles/
-	// directories. settings.json is sanitized first — its secret- or host-only
-	// keys are dropped so they never cross into the container (env, the
-	// apiKeyHelper/aws*/otel auth helpers, and the project-MCP auto-trust flags);
-	// your model, permissions, hooks, and presentation keys carry over. The
-	// credentials file, project history, and runtime state are never copied.
-	// Like ~/.gitconfig it is staged on `cld it`/`cld up`. Enabled by default;
-	// set false to keep containers on cld's minimal seed only. Pointer so an
-	// unset value still defaults to true.
+	// ShareConfig installs cld's own user-default Claude Code config (see
+	// UserDefaultDir — settings.json, CLAUDE.md, commands/, agents/, and
+	// output-styles/) into each session. This is a directory cld owns, not your
+	// host's ~/.claude — nothing here is ever read from or written back to the
+	// host. settings.json is sanitized first — its secret- or host-only keys
+	// are dropped so they never cross into the container (env, the
+	// apiKeyHelper/aws*/otel auth helpers, and the project-MCP auto-trust
+	// flags); the rest of what you put there (model, permissions, hooks,
+	// presentation keys) carries over. Enabled by default; set false to keep
+	// containers on cld's minimal seed only. Pointer so an unset value still
+	// defaults to true.
 	ShareConfig *bool `yaml:"share_config"`
 }
 
@@ -215,13 +215,6 @@ func (c *Config) AgentSourcePath() string {
 	return filepath.Join(c.CacheDir, "agent.source")
 }
 
-// ClaudeShareDir is where the host's shared Claude Code config (settings.json,
-// CLAUDE.md, commands/, agents/, output-styles/) is staged for the daemon to
-// copy into each session, mirroring GitConfigPath.
-func (c *Config) ClaudeShareDir() string {
-	return filepath.Join(c.CacheDir, "claude-config")
-}
-
 // GitConfigPath is where the host's ~/.gitconfig is staged for the daemon to
 // copy into each session (so identity and signing config match the host, like
 // VS Code Dev Containers).
@@ -235,13 +228,10 @@ func (c *Config) BinDir() string {
 	return filepath.Join(c.CacheDir, "bin")
 }
 
-// GlobalBackupDir holds project-independent state such as credentials and settings.
-func (c *Config) GlobalBackupDir() string {
-	return filepath.Join(c.DataDir, "global")
-}
-
-// ProjectBackupDir holds per-project state such as conversation transcripts,
-// keyed by a digest of the host-side workspace path.
+// ProjectBackupDir holds a project's whole backup — conversation transcripts
+// and its own settings snapshot (see internal/syncer) — keyed by a digest of
+// the host-side workspace path. Isolated per project: nothing here is shared
+// with another project's backup.
 func (c *Config) ProjectBackupDir(key string) string {
 	return filepath.Join(c.DataDir, "projects", key)
 }
@@ -253,4 +243,17 @@ func (c *Config) ProjectBackupDir(key string) string {
 // Auth.OAuthTokenFile when the file exists. Keep it mode 0600.
 func (c *Config) OAuthTokenStorePath() string {
 	return filepath.Join(c.DataDir, "oauth-token")
+}
+
+// UserDefaultDir holds the user-default Claude Code config cld installs into
+// every session: settings.json, CLAUDE.md, commands/, agents/, and
+// output-styles/ (see install_claude_config). It lives under DataDir, owned by
+// cld — not the host's ~/.claude — so it is populated by editing files here
+// directly (or via `cld config`), never by reading or writing the host's own
+// Claude Code config. Like OAuthTokenStorePath, this is the one thing besides
+// ProjectBackupDir's per-project state that persists across containers, but
+// unlike a per-project backup it is not written by any container: only the
+// user changes it, and every session sees the same copy.
+func (c *Config) UserDefaultDir() string {
+	return filepath.Join(c.DataDir, "user-default")
 }

@@ -69,7 +69,7 @@ func write_backup(tw *tar.Writer, l Layout, base string, meta Meta, workspace st
 		return err
 	}
 
-	err = add_tree_mapped(tw, l.GlobalDir, base, uid, gid, nil)
+	err = add_tree_mapped(tw, filepath.Join(l.ProjectDir, settingsDir), base, uid, gid, nil)
 	if err != nil {
 		return err
 	}
