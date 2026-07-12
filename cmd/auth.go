@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -8,11 +9,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lesomnus/cld/internal/daemon"
 	"github.com/lesomnus/xli"
 	"github.com/lesomnus/xli/flg"
+	"golang.org/x/term"
 )
 
 // maxTokenInput bounds how much we read from stdin for a token; the daemon
@@ -63,7 +67,7 @@ func newCmdAuthLogin() *xli.Command {
 				return importCredentialsFile(ctx, cmd, c.SocketPath(), from)
 			}
 
-			creds, err := loginToTempConfig(ctx, cmd)
+			creds, err := loginToTempConfig(ctx)
 			if err != nil {
 				return err
 			}
@@ -82,7 +86,7 @@ func newCmdAuthLogin() *xli.Command {
 // returns the credentials it writes there. The dir (and the tokens in it) is
 // always wiped before returning. A watchdog stops the process once the
 // credentials land, in case the login lingers instead of exiting on its own.
-func loginToTempConfig(ctx context.Context, cmd *xli.Command) (string, error) {
+func loginToTempConfig(ctx context.Context) (string, error) {
 	claudeBin, err := exec.LookPath("claude")
 	if err != nil {
 		return "", fmt.Errorf("`claude` not found on PATH; install Claude Code, or import an existing " +
@@ -96,15 +100,31 @@ func loginToTempConfig(ctx context.Context, cmd *xli.Command) (string, error) {
 	defer os.RemoveAll(dir) // best-effort wipe of the throwaway tokens
 	credPath := filepath.Join(dir, ".credentials.json")
 
-	lc := exec.CommandContext(ctx, claudeBin, "auth", "login", "--claudeai")
+	// Own the process lifetime so an interrupt can force claude down: raw mode
+	// (below) swallows Ctrl-C, so cancelling this context is how we stop it.
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+
+	lc := exec.CommandContext(runCtx, claudeBin, "auth", "login", "--claudeai")
 	lc.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR="+dir)
-	lc.Stdin, lc.Stdout, lc.Stderr = os.Stdin, os.Stdout, os.Stderr
+	lc.Stdout, lc.Stderr = os.Stdout, os.Stderr
+	// claude reads the pasted code with echo off, so a plain passthrough gives the
+	// user no feedback at all. When interactive, feed claude's stdin through a pipe
+	// and echo one '*' per character ourselves so the entry is visible. In raw mode
+	// Ctrl-C is a byte, not a signal, so the pump restores the terminal and cancels
+	// the run itself — otherwise a Ctrl-C at the prompt would wedge the terminal.
+	var canceled atomic.Bool
+	if restore, ok := startMaskedStdin(lc, func() { canceled.Store(true); cancelRun() }); ok {
+		defer restore()
+	} else {
+		lc.Stdin = os.Stdin
+	}
 
 	// Once the credentials file appears, give the login a moment to finish and
 	// then stop it if it is still running — some flows drop into a session rather
 	// than exiting. The happy path is `claude auth login` exiting on its own,
 	// which makes this a no-op.
-	watch, cancelWatch := context.WithCancel(ctx)
+	watch, cancelWatch := context.WithCancel(runCtx)
 	defer cancelWatch()
 	go func() {
 		for {
@@ -128,6 +148,9 @@ func loginToTempConfig(ctx context.Context, cmd *xli.Command) (string, error) {
 	// the login succeeded.
 	runErr := lc.Run()
 
+	if canceled.Load() {
+		return "", fmt.Errorf("login canceled")
+	}
 	raw, err := os.ReadFile(credPath)
 	if err != nil || len(strings.TrimSpace(string(raw))) == 0 {
 		if runErr != nil {
@@ -139,6 +162,110 @@ func loginToTempConfig(ctx context.Context, cmd *xli.Command) (string, error) {
 		return "", fmt.Errorf("credentials are too large")
 	}
 	return strings.TrimSpace(string(raw)), nil
+}
+
+// startMaskedStdin makes the pasted login code visible as it is typed. claude
+// reads it with echo off, so it hands claude a pipe for stdin and echoes '*' per
+// character itself, forwarding the real bytes to claude on Enter. Returns
+// ok=false (leaving stdin to the caller) when stdin/stdout is not a terminal.
+// Raw mode drops output post-processing, so claude's own prompts are routed
+// through a writer that re-adds carriage returns. onInterrupt is called when the
+// user hits Ctrl-C — raw mode delivers it as a byte, not a signal, so the caller
+// must tear claude down itself. The returned restore is idempotent: the pump
+// runs it on interrupt to un-raw the terminal immediately, and the deferred call
+// is then a no-op.
+func startMaskedStdin(lc *exec.Cmd, onInterrupt func()) (func(), bool) {
+	in := int(os.Stdin.Fd())
+	if !term.IsTerminal(in) || !term.IsTerminal(int(os.Stdout.Fd())) {
+		return nil, false
+	}
+	old, err := term.MakeRaw(in)
+	if err != nil {
+		return nil, false
+	}
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		term.Restore(in, old)
+		return nil, false
+	}
+	lc.Stdin = pr
+	lc.Stdout = &crlfWriter{w: os.Stdout}
+	lc.Stderr = &crlfWriter{w: os.Stderr}
+
+	var restoreOnce sync.Once
+	restore := func() {
+		restoreOnce.Do(func() {
+			term.Restore(in, old)
+			pw.Close()
+			pr.Close()
+		})
+	}
+
+	go pumpMasked(bufio.NewReader(os.Stdin), os.Stdout, pw, func() {
+		restore()     // un-raw the terminal before we kill claude
+		onInterrupt() // tear the login down
+	})
+
+	return restore, true
+}
+
+// pumpMasked reads one line at a time, echoing '*' per character (honoring
+// backspace) to echo, then forwards the real bytes to out on Enter — so claude,
+// reading a line from its stdin pipe, gets the true code while the screen shows
+// only asterisks. On Ctrl-C it calls onInterrupt (the caller tears claude down,
+// since raw mode gave us a byte, not a signal) and returns. Ctrl-D and a read
+// error both just close out (EOF) so claude's own read ends.
+func pumpMasked(r *bufio.Reader, echo io.Writer, out io.WriteCloser, onInterrupt func()) {
+	defer out.Close()
+	var line []byte
+	for {
+		b, err := r.ReadByte()
+		if err != nil {
+			return
+		}
+		switch b {
+		case '\r', '\n':
+			fmt.Fprint(echo, "\r\n")
+			if _, err := out.Write(append(line, '\n')); err != nil {
+				return
+			}
+			line = line[:0]
+		case 3: // Ctrl-C: raw mode made this a byte, not a signal — cancel the login.
+			fmt.Fprint(echo, "\r\n")
+			onInterrupt()
+			return
+		case 4: // Ctrl-D: end claude's read with EOF.
+			fmt.Fprint(echo, "\r\n")
+			return
+		case 127, 8: // Backspace/Delete
+			if len(line) > 0 {
+				line = line[:len(line)-1]
+				fmt.Fprint(echo, "\b \b")
+			}
+		default:
+			line = append(line, b)
+			fmt.Fprint(echo, "*")
+		}
+	}
+}
+
+// crlfWriter re-adds a carriage return before a bare newline, so output written
+// while the terminal is in raw mode (which drops the ONLCR translation) is not
+// stairstepped.
+type crlfWriter struct{ w io.Writer }
+
+func (c *crlfWriter) Write(p []byte) (int, error) {
+	var b []byte
+	for i := range p {
+		if p[i] == '\n' && (i == 0 || p[i-1] != '\r') {
+			b = append(b, '\r')
+		}
+		b = append(b, p[i])
+	}
+	if _, err := c.w.Write(b); err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }
 
 // importCredentialsFile MOVES an existing credentials file into the daemon: it
