@@ -376,7 +376,35 @@ func (d *Daemon) install_claude(ctx context.Context, e *entry, id string) (strin
 	if code != 0 {
 		return "", fmt.Errorf("symlink: exit %d: %s", code, out)
 	}
+
+	d.link_user_claude(ctx, e, id)
 	return version, nil
+}
+
+// link_user_claude points the container user's ~/.local/bin/claude at the
+// installed binary. Claude Code checks that default install path for
+// self-management and warns ("claude command … missing or broken · run claude
+// install to repair") when it is absent — cld installs to /usr/local/bin (on
+// PATH) instead. The link targets install_dir/claude, not the versioned name,
+// so it follows version bumps. Best-effort and cosmetic: the /usr/local/bin
+// binary works regardless, so a failure must not block provisioning.
+func (d *Daemon) link_user_claude(ctx context.Context, e *entry, id string) {
+	if e.home == "" {
+		return
+	}
+	link := path.Join(e.home, ".local", "bin", "claude")
+	target := path.Join(install_dir, "claude")
+	out, code, err := dockerx.ExecOutput(ctx, d.cli, id, e.user, []string{
+		"sh", "-c", fmt.Sprintf("mkdir -p %s && ln -sfn %s %s",
+			tmuxx.Quote(path.Dir(link)), tmuxx.Quote(target), tmuxx.Quote(link)),
+	})
+	if err != nil {
+		d.log.Warn("link ~/.local/bin/claude failed",
+			slog.String("name", e.item.Name), slog.String("error", err.Error()))
+	} else if code != 0 {
+		d.log.Warn("link ~/.local/bin/claude failed",
+			slog.String("name", e.item.Name), slog.String("out", strings.TrimSpace(out)))
+	}
 }
 
 // install_self copies the cld executable into the container for use as the

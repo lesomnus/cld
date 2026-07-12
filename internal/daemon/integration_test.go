@@ -283,6 +283,13 @@ func TestDaemon(t *testing.T) {
 		ok, err := dockerx.PathExists(t.Context(), cli, ctr, "/usr/local/bin/cld")
 		require.NoError(t, err)
 		require.True(t, ok)
+
+		// ~/.local/bin/claude points at the installed binary so Claude Code's
+		// self-check ("missing or broken · run claude install to repair") passes.
+		out, code, err = dockerx.ExecOutput(t.Context(), cli, ctr, "", []string{"readlink", "/root/.local/bin/claude"})
+		require.NoError(t, err)
+		require.Equal(t, 0, code)
+		require.Equal(t, "/usr/local/bin/claude", strings.TrimSpace(out))
 	})
 	t.Run("seeds onboarding and retention state", func(t *testing.T) {
 		out, code, err := dockerx.ExecOutput(t.Context(), cli, ctr, "", []string{"cat", "/root/.cld/claude/.claude.json"})
