@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/lesomnus/cld/internal/broker"
 )
 
 // Info tells clients where the daemon — and so the tmux server — lives, so
@@ -49,6 +51,7 @@ func (d *Daemon) api() http.Handler {
 	mux.HandleFunc("POST /purge", d.handle_purge)
 	mux.HandleFunc("POST /purge/all", d.handle_purge_all)
 	mux.HandleFunc("POST /auth/token", d.handle_set_token)
+	mux.HandleFunc("POST /auth/credentials", d.handle_set_credentials)
 	return mux
 }
 
@@ -105,8 +108,10 @@ func (d *Daemon) scoped_api(self_id string) http.Handler {
 	// self-scoped — the token is global, injected into every session — so any
 	// container that can reach the relay can replace it. That is the same trust
 	// boundary as remote_control itself (which gates this relay's existence); set
-	// remote_control=false to close it entirely.
+	// remote_control=false to close it entirely. The broker login is the same:
+	// global, and settable from inside a container for `cld auth login`.
 	mux.HandleFunc("POST /auth/token", d.handle_set_token)
+	mux.HandleFunc("POST /auth/credentials", d.handle_set_credentials)
 	return mux
 }
 
@@ -408,6 +413,56 @@ func (d *Daemon) handle_set_token(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// maxCredentialsLen bounds the accepted credentials body. A ~/.claude
+// credentials file is a few hundred bytes; this is generous.
+const maxCredentialsLen = 16384
+
+// handle_set_credentials hands the broker the single `/login` it owns, from the
+// body of a `~/.claude/.credentials.json` (the claudeAiOauth object). The
+// refresh token — the sensitive part — is persisted only here on the daemon
+// host, never injected into a container. Sessions authenticate through the
+// broker's proxy instead. Backs `cld auth login`.
+func (d *Daemon) handle_set_credentials(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxCredentialsLen+1))
+	if err != nil {
+		http.Error(w, "read credentials", http.StatusBadRequest)
+		return
+	}
+	if len(body) > maxCredentialsLen {
+		http.Error(w, "credentials too long", http.StatusRequestEntityTooLarge)
+		return
+	}
+
+	var doc struct {
+		ClaudeAiOauth *struct {
+			AccessToken  string `json:"accessToken"`
+			RefreshToken string `json:"refreshToken"`
+			ExpiresAt    int64  `json:"expiresAt"` // ms since epoch
+		} `json:"claudeAiOauth"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil || doc.ClaudeAiOauth == nil {
+		http.Error(w, "expected a ~/.claude/.credentials.json with a claudeAiOauth object", http.StatusBadRequest)
+		return
+	}
+	if doc.ClaudeAiOauth.RefreshToken == "" {
+		http.Error(w, "credentials have no refreshToken", http.StatusBadRequest)
+		return
+	}
+
+	creds := &broker.Credentials{
+		AccessToken:  doc.ClaudeAiOauth.AccessToken,
+		RefreshToken: doc.ClaudeAiOauth.RefreshToken,
+		ExpiresAt:    time.UnixMilli(doc.ClaudeAiOauth.ExpiresAt),
+	}
+	if err := d.broker.SetCredentials(creds); err != nil {
+		http.Error(w, "store credentials", http.StatusInternalServerError)
+		d.log.Warn("set-credentials failed", slog.String("error", err.Error()))
+		return
+	}
+	d.log.Info("broker login updated")
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // by_name finds a tracked entry by its display name or its short alias. A
 // display-name match wins over an alias match, so the handle a user sees under
 // NAME always resolves to that same container even if it happens to equal
@@ -529,6 +584,31 @@ func SetOAuthToken(ctx context.Context, socket string, token string) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "text/plain")
+
+	res, err := hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("is `cld serve` running? %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 512))
+		return fmt.Errorf("daemon: %s: %s", res.Status, string(body))
+	}
+	return nil
+}
+
+// SetCredentials hands the daemon the broker login (the body of a
+// ~/.claude/.credentials.json). The credentials travel in the request body (not
+// the URL) so they stay out of logs. Backs `cld auth login`; reachable through
+// the in-container relay so it works from inside a devcontainer.
+func SetCredentials(ctx context.Context, socket string, credentialsJSON string) error {
+	hc := NewSocketClient(socket)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://cld/auth/credentials",
+		strings.NewReader(credentialsJSON))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
 
 	res, err := hc.Do(req)
 	if err != nil {

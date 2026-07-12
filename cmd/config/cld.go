@@ -245,6 +245,16 @@ func (c *Config) OAuthTokenStorePath() string {
 	return filepath.Join(c.DataDir, "oauth-token")
 }
 
+// BrokerCredentialsPath is where the auth broker persists the single `/login`
+// it owns (access + rotating refresh token; see internal/broker). It lives under
+// DataDir, mode 0600, and is the ONLY place a refresh token is kept — sessions
+// get short-lived access tokens through the broker's proxy, never this file. The
+// broker is active whenever this file holds a refresh token (set by
+// `cld auth login`); otherwise cld falls back to OAuthTokenStorePath.
+func (c *Config) BrokerCredentialsPath() string {
+	return filepath.Join(c.DataDir, "broker-credentials.json")
+}
+
 // UserDefaultDir holds the user-default Claude Code config cld installs into
 // every session: settings.json, CLAUDE.md, commands/, agents/, and
 // output-styles/ (see install_claude_config). It lives under DataDir, owned by

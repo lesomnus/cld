@@ -180,6 +180,9 @@ func (d *Daemon) ensure_(ctx context.Context, e *entry) error {
 			// Expose the daemon's control API inside the container so `cld it`
 			// run there can reach and attach to this session.
 			go d.relay_api(wctx, e, id)
+			// Expose the auth proxy so a broker session authenticates through it
+			// (no-op when the broker is inactive).
+			go d.relay_proxy(wctx, e, id)
 		} else {
 			go d.poll_container(wctx, e)
 		}
@@ -655,8 +658,12 @@ func (d *Daemon) ensure_session(ctx context.Context, e *entry, id string) error 
 	for _, kv := range d.session_env(e) {
 		argv = append(argv, "--env", kv)
 	}
-	if f := d.oauth_token_file(); f != "" {
-		argv = append(argv, "--oauth-token-file", f)
+	// A broker session gets its auth through the proxy (ANTHROPIC_BASE_URL, set in
+	// session_env), so it must NOT also receive a CLAUDE_CODE_OAUTH_TOKEN.
+	if !d.broker_session(e) {
+		if f := d.oauth_token_file(); f != "" {
+			argv = append(argv, "--oauth-token-file", f)
+		}
 	}
 	argv = append(argv,
 		"--notify", d.cfg.SocketPath(),
@@ -717,6 +724,17 @@ func (d *Daemon) session_env(e *entry) []string {
 	// already had.
 	if d.cfg.Auth.ForwardAgentEnabled() && e.arch_ok {
 		env = append(env, "SSH_AUTH_SOCK="+e.agent_sock())
+	}
+	// Route claude's API traffic through the broker's proxy: it authenticates
+	// with a centrally-refreshed subscription token, so the session holds only a
+	// placeholder and never a refresh token. ENABLE_TOOL_SEARCH re-enables the
+	// tool-search optimization that a non-first-party base URL otherwise disables.
+	if d.broker_session(e) {
+		env = append(env,
+			"ANTHROPIC_BASE_URL=http://"+proxyListenAddr,
+			"ANTHROPIC_AUTH_TOKEN=cld-broker-placeholder",
+			"ENABLE_TOOL_SEARCH=true",
+		)
 	}
 	return env
 }

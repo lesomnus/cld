@@ -216,8 +216,16 @@ func ListenAndServe(ctx context.Context, path string, in io.Reader, out io.Write
 	if err != nil {
 		return err
 	}
-	defer ln.Close()
 	os.Chmod(path, 0o600)
+	return Serve(ctx, ln, in, out)
+}
+
+// Serve is ListenAndServe over an already-bound listener, for callers that need
+// a non-unix transport — e.g. the API proxy listens on a loopback TCP port so a
+// session can point ANTHROPIC_BASE_URL (an http:// URL) at it. It closes ln on
+// return.
+func Serve(ctx context.Context, ln net.Listener, in io.Reader, out io.Writer) error {
+	defer ln.Close()
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

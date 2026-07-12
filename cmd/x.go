@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -32,6 +33,7 @@ func NewCmdX() *xli.Command {
 			new_cmd_x_watch(),
 			new_cmd_x_agent(),
 			new_cmd_x_api(),
+			new_cmd_x_proxy(),
 		},
 		Handler: xli.RequireSubcommand(),
 	}
@@ -164,6 +166,39 @@ func new_cmd_x_api() *xli.Command {
 			defer stop()
 
 			err := agentx.ListenAndServe(ctx, sock, os.Stdin, os.Stdout)
+			if err == context.Canceled {
+				return nil
+			}
+			return err
+		}),
+	}
+}
+
+// new_cmd_x_proxy serves the container-side end of the daemon's auth-proxy
+// relay: it listens on a loopback TCP address and multiplexes each connection
+// over this exec's stdio to the daemon, which bridges it to an in-process
+// reverse proxy that injects the current subscription access token and forwards
+// to api.anthropic.com. claude in the container reaches it via
+// ANTHROPIC_BASE_URL=http://<addr>. TCP (not a unix socket) because
+// ANTHROPIC_BASE_URL is an http:// URL. Same stdio transport as `cld x api`.
+func new_cmd_x_proxy() *xli.Command {
+	return &xli.Command{
+		Name:  "proxy",
+		Brief: "serve the daemon auth-proxy relay on a loopback TCP port, over this exec's stdio",
+		Args: arg.Args{
+			&arg.String{Name: "addr", Brief: "loopback TCP address to listen on (host:port)"},
+		},
+		Handler: xli.OnRun(func(ctx context.Context, cmd *xli.Command, next xli.Next) error {
+			addr := arg.MustGet[string](cmd, "addr")
+
+			ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+			defer stop()
+
+			ln, err := net.Listen("tcp", addr)
+			if err != nil {
+				return z.Err(err, "listen")
+			}
+			err = agentx.Serve(ctx, ln, os.Stdin, os.Stdout)
 			if err == context.Canceled {
 				return nil
 			}

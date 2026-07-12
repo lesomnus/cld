@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/lesomnus/cld/cmd/config"
+	"github.com/lesomnus/cld/internal/broker"
 	"github.com/lesomnus/cld/internal/devc"
 	"github.com/lesomnus/cld/internal/release"
 	"github.com/lesomnus/cld/internal/tmuxx"
@@ -114,6 +115,7 @@ type Daemon struct {
 	self     string // path of the cld executable, reused as pane client and watcher
 	self_ctr string // container ID when the daemon itself runs in one, else ""
 	sessions *sessionStore
+	broker   *broker.Broker // central subscription-auth broker (see internal/broker)
 
 	base_ctx context.Context // long-lived; parents watcher/sync goroutines
 	wg       sync.WaitGroup  // tracks worker goroutines
@@ -147,6 +149,7 @@ func New(cfg *config.Config, cli *client.Client, log *slog.Logger) (*Daemon, err
 		log:      log,
 		self:     self,
 		sessions: &sessionStore{dir: filepath.Join(cfg.CacheDir, "sessions")},
+		broker:   broker.New(broker.FileStore{Path: cfg.BrokerCredentialsPath()}),
 		entries:  map[string]*entry{},
 	}, nil
 }

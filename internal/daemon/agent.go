@@ -235,6 +235,40 @@ func (d *Daemon) relay_api(ctx context.Context, e *entry, id string) {
 		[]string{path.Join(install_dir, "cld"), "x", "api", e.api_sock()}, ln.dial)
 }
 
+// proxyListenAddr is the loopback address the auth proxy listens on INSIDE each
+// container; claude reaches it via ANTHROPIC_BASE_URL. Each container has its own
+// network namespace, so a fixed port never collides across containers.
+const proxyListenAddr = "127.0.0.1:49327"
+
+// broker_session reports whether this session should authenticate through the
+// broker's proxy rather than an injected CLAUDE_CODE_OAUTH_TOKEN. It needs both
+// an active broker (a login set via `cld auth login`) and the in-container relay
+// (arch match, so cld's own binary can run the proxy listener there).
+func (d *Daemon) broker_session(e *entry) bool {
+	return e.arch_ok && d.cfg.Auth.RemoteControlEnabled() && d.broker.HasCredentials()
+}
+
+// relay_proxy exposes the daemon's auth proxy inside the container: an
+// in-process reverse proxy that rewrites Authorization with the current
+// subscription access token and forwards to api.anthropic.com. The container
+// side listens on a loopback TCP port (claude points ANTHROPIC_BASE_URL at it);
+// the daemon serves the proxy over a pipe listener, exactly like relay_api but
+// with the broker handler instead of the scoped control API. The refresh token
+// stays on the daemon: only short-lived access tokens ever cross the wire.
+func (d *Daemon) relay_proxy(ctx context.Context, e *entry, id string) {
+	if !d.broker_session(e) {
+		return
+	}
+	ln := new_pipe_listener()
+	srv := &http.Server{Handler: d.broker.Handler()}
+	go srv.Serve(ln)
+	defer srv.Close()
+	defer ln.Close()
+
+	d.relay(ctx, e, id, "proxy",
+		[]string{path.Join(install_dir, "cld"), "x", "proxy", proxyListenAddr}, ln.dial)
+}
+
 // relay keeps a socket relay alive for the life of the container: each attempt
 // runs the given container-side listener command and bridges its accepted
 // connections to dial() on the daemon side, retrying while the container runs.

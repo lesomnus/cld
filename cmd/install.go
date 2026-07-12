@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/lesomnus/cld/cmd/config"
@@ -14,7 +13,6 @@ import (
 	"github.com/lesomnus/xli/flg"
 	"github.com/lesomnus/z"
 	"github.com/moby/moby/client"
-	"golang.org/x/term"
 )
 
 func NewCmdInstall() *xli.Command {
@@ -36,14 +34,6 @@ func NewCmdInstall() *xli.Command {
 			// and backups land under paths the host `cld` owns and reaches.
 			os.MkdirAll(c.CacheDir, 0o755)
 			os.MkdirAll(c.DataDir, 0o755)
-
-			// Offer to set the OAuth token before the daemon starts, so a fresh
-			// install is authenticated with no extra step. Only when none is
-			// configured and stdin is interactive; a scripted install proceeds
-			// and can set one later with `cld auth set-token`.
-			if err := prompt_oauth_token(cmd, c); err != nil {
-				return err
-			}
 
 			spec, err := installer.SpecFor(image, os.Getenv("DOCKER_HOST"), c.CacheDir, c.DataDir, os.Getuid(), os.Getgid())
 			if err != nil {
@@ -69,61 +59,34 @@ func NewCmdInstall() *xli.Command {
 			} else {
 				fmt.Fprintln(cmd.ErrWriter, "cld: daemon started but not answering yet; check `cld ls`")
 			}
+
+			// Point the user at authentication when nothing is configured yet, so a
+			// fresh install has a clear next step. Authenticating is optional: a
+			// session left unauthenticated simply prompts a login inside the
+			// container, and that token stays in that container.
+			if !auth_configured(c) {
+				fmt.Fprintln(cmd.ErrWriter, "cld: no login configured — run `cld auth login` to share one Claude "+
+					"subscription across sessions (optional; otherwise log in inside each container)")
+			}
 			return nil
 		}),
 	}
 }
 
-// need_oauth_token reports whether install should offer to set a token: only
-// when neither a stored token (from a prior `cld auth set-token`) nor a
-// configured auth.oauth_token_file is present.
-func need_oauth_token(c *config.Config) bool {
+// auth_configured reports whether the daemon already has a way to authenticate
+// sessions: a broker login (`cld auth login`), a stored token (`cld auth
+// set-token`), or a configured auth.oauth_token_file. When none is present,
+// install points the user at `cld auth login`.
+func auth_configured(c *config.Config) bool {
 	if c.Auth.OAuthTokenFile != "" {
-		return false
+		return true
 	}
-	_, err := os.Stat(c.OAuthTokenStorePath())
-	return os.IsNotExist(err)
-}
-
-// prompt_oauth_token asks for a Claude Code OAuth token (from `claude
-// setup-token`) and stores it under DataDir so the daemon injects it into every
-// session. It is skipped when a token is already configured or when stdin is not
-// a terminal (a scripted install must not block). Input is read without echo so
-// the secret never appears on screen; an empty entry skips.
-func prompt_oauth_token(cmd *xli.Command, c *config.Config) error {
-	if !need_oauth_token(c) {
-		return nil
+	for _, p := range []string{c.BrokerCredentialsPath(), c.OAuthTokenStorePath()} {
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
 	}
-	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return nil
-	}
-
-	fmt.Fprintln(cmd.ErrWriter, "No Claude Code OAuth token is configured.")
-	fmt.Fprintln(cmd.ErrWriter, "Paste one from `claude setup-token` to authenticate every session,")
-	fmt.Fprint(cmd.ErrWriter, "or press Enter to skip (set it later with `cld auth set-token`): ")
-	raw, err := term.ReadPassword(int(os.Stdin.Fd()))
-	fmt.Fprintln(cmd.ErrWriter) // ReadPassword swallows the newline
-	if err != nil {
-		// Don't fail the install over a prompt read error; the token is optional.
-		fmt.Fprintln(cmd.ErrWriter, "cld: could not read token; continuing without one")
-		return nil
-	}
-
-	token := strings.TrimSpace(string(raw))
-	if token == "" {
-		fmt.Fprintln(cmd.ErrWriter, "cld: no token entered; continuing without one")
-		return nil
-	}
-	if strings.ContainsAny(token, " \t\r\n") {
-		return fmt.Errorf("token contains whitespace")
-	}
-
-	p := c.OAuthTokenStorePath()
-	if err := os.WriteFile(p, []byte(token), 0o600); err != nil {
-		return fmt.Errorf("store token: %w", err)
-	}
-	fmt.Fprintln(cmd.ErrWriter, "cld: OAuth token stored")
-	return nil
+	return false
 }
 
 func short_id(id string) string {
