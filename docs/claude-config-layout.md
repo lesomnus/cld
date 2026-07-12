@@ -16,9 +16,12 @@ ownership and a one-way flow:
 | **in-container** | the container | `~/.cld/claude/...` inside the container (entries `claude.Classify` marks `BackupSkip`) | nothing outside ever writes it | nowhere — never leaves the container, never restored |
 
 Invariants that follow from this:
-- **The OAuth token is always user-default** — `Config.OAuthTokenStorePath()`
-  sits next to `user-default/` under the same `DataDir`, set via `cld auth
-  set-token`. It is never per-project and never in-container.
+- **Auth secrets are host-side, never per-project and never in-container** — a
+  broker login (`cld auth login`, `Config.BrokerCredentialsPath()`) and a
+  long-lived token (`cld auth set-token`, `Config.OAuthTokenStorePath()`) both
+  sit next to `user-default/` under the same `DataDir`. A session receives only a
+  short-lived access token (through the broker's proxy) or the long-lived token —
+  the rotating refresh token never leaves the daemon host.
 - **user-default never touches the host's real `~/.claude`.** cld does not
   read or write it; you populate `user-default/` yourself.
 - **A change made inside a container only ever reaches that project's own
@@ -130,11 +133,34 @@ the allowlist, so all are Skip.
 `.credentials.json` is **not** shared. It holds a claude.ai OAuth session whose
 refresh token rotates on every refresh, so one file shared across live containers
 makes each container's refresh invalidate the others' — forcing repeated browser
-logins. Instead, auth is injected per session as `CLAUDE_CODE_OAUTH_TOKEN` from a
-long-lived token (`claude setup-token`), which no container refreshes, so there is
-nothing to rotate or clobber. Set it with `cld auth set-token` (reads the token
-from stdin; works from inside a devcontainer over the control-API relay) or via
-`auth.oauth_token_file`; the daemon prefers the `set-token` value when present.
+logins. The same clash happens between *any* two holders of one refresh token, so
+cld keeps the refresh token in exactly one place. A session is authenticated by
+one of three means, in order of precedence:
+
+1. **Broker — `cld auth login`.** The daemon owns a single Claude-subscription
+   login (`Config.BrokerCredentialsPath()`, host-side, mode 0600), refreshes it
+   centrally at the subscription token endpoint, and every session reaches
+   Anthropic through a per-container reverse proxy (`internal/broker`, injected as
+   `ANTHROPIC_BASE_URL`) that rewrites the `Authorization` header with the current
+   short-lived access token. No container ever holds the refresh token, and
+   because the proxy swaps in a fresh token per request, a long-running session
+   never restarts when the token rotates. `cld auth login` runs `claude auth
+   login` against a throwaway config dir, so the login it mints is a *separate*
+   lineage the daemon owns from birth — the host's own `~/.claude` is never
+   touched. (`cld auth login --from <file>` instead imports an existing
+   credentials file, *moving* it — the source is deleted so the host and daemon
+   can't share one refresh token.) Requires the in-container relay
+   (`auth.remote_control`, arch match); otherwise cld falls back to (2).
+2. **Long-lived token.** `CLAUDE_CODE_OAUTH_TOKEN`, injected from a `claude
+   setup-token` token set with `cld auth set-token` (stored at
+   `Config.OAuthTokenStorePath()`) or configured as `auth.oauth_token_file`. No
+   container refreshes it, so there is nothing to rotate; the trade-off is a
+   narrower scope than a full subscription login. The daemon prefers the
+   `set-token` value over `auth.oauth_token_file` when both are present.
+3. **Nothing.** With no broker login and no token, a session starts
+   unauthenticated and Claude Code prompts a login inside the container. That
+   `.credentials.json` stays in that container (Skip — never backed up or shared),
+   so per-container logins never collide with each other or the host.
 
 ## Notes
 

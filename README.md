@@ -284,9 +284,15 @@ $ source <(cld completion zsh)   # or add this line to ~/.zshrc
 
 All settings are optional; see `cld.yaml` for the full list with defaults.
 
-To drop the `~/.claude` bind mount from your devcontainers entirely, point
-`auth.oauth_token_file` at a file holding a token from `claude setup-token`;
-cld injects it so a fresh container authenticates with no interactive login.
+To drop the `~/.claude` bind mount from your devcontainers entirely, run
+`cld auth login`: the daemon takes ownership of one Claude-subscription login,
+refreshes it centrally, and shares it across sessions through a proxy — no
+refresh token ever enters a container, and a running session picks up rotated
+tokens without restarting. Your host's own `~/.claude` is left untouched.
+Alternatively point `auth.oauth_token_file` at a `claude setup-token` token (or
+use `cld auth set-token`); cld injects it as `CLAUDE_CODE_OAUTH_TOKEN`. With
+neither, a fresh container simply prompts a login inside itself. See
+`docs/claude-config-layout.md` for how the three tiers relate.
 
 cld's own user-default Claude Code config (settings, `CLAUDE.md`, commands,
 agents, output styles — see "Your claude config comes with you" above) is

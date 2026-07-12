@@ -13,11 +13,17 @@
 #  - ~/work/vendor/**
 
 auth:
-  # Path to a host file holding a Claude Code OAuth token (from
-  # `claude setup-token`). When set, the token is injected into each session
-  # so a fresh container needs no interactive login — this is what lets you
-  # drop the "~/.claude" bind mount from your devcontainers. Keep it 0600;
-  # only the path (never the token) appears in the tmux command.
+  # To share one Claude subscription across sessions, prefer `cld auth login`:
+  # the daemon owns and centrally refreshes a single login, and sessions
+  # authenticate through its proxy with only short-lived access tokens (no
+  # refresh token ever enters a container). Nothing for it is configured here.
+  #
+  # The setting below is the simpler long-lived-token fallback. Path to a host
+  # file holding a Claude Code OAuth token (from `claude setup-token`). When set,
+  # the token is injected into each session so a fresh container needs no
+  # interactive login — this too lets you drop the "~/.claude" bind mount from
+  # your devcontainers. Keep it 0600; only the path (never the token) appears in
+  # the tmux command.
   #oauth_token_file: ~/.config/cld/oauth-token
 
   # Relay the host ssh-agent into each session (SSH_AUTH_SOCK), so `git commit`
