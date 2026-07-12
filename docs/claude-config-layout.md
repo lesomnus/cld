@@ -2,9 +2,41 @@
 
 `cld` points `CLAUDE_CONFIG_DIR` at a dedicated directory inside each container
 (`~/.cld/claude`, see `claude.ConfigDirIn`) instead of the default `~/.claude`.
-Claude Code and `cld` both write state into that one directory. When `cld` backs
-a container up, every top-level entry is classified by `claude.Classify` into
-one of three buckets:
+Claude Code and `cld` both write state into that one directory.
+
+## The three tiers
+
+Claude Code state lives in exactly three places, each with different
+ownership and a one-way flow:
+
+| Tier | Owner | Location | Flows in from | Flows out to |
+|---|---|---|---|---|
+| **user-default** | you, directly | `Config.UserDefaultDir()` (`<DataDir>/user-default/`) | nothing — you edit it yourself | mirrored into **every** container on each provision (`install_claude_config`), overwriting whatever a restore brought back |
+| **per-project** | cld, one dir per devcontainer name | `Config.ProjectBackupDir(key)` (`<DataDir>/projects/<key>/`) | that *same* project's own container, live (`internal/daemon/sync.go` watcher/poll → `copy_out`) | restored into a fresh container of the *same* project only (`syncer.CopyIn`); survives `cld down`, deleted only by `cld purge` |
+| **in-container** | the container | `~/.cld/claude/...` inside the container (entries `claude.Classify` marks `BackupSkip`) | nothing outside ever writes it | nowhere — never leaves the container, never restored |
+
+Invariants that follow from this:
+- **The OAuth token is always user-default** — `Config.OAuthTokenStorePath()`
+  sits next to `user-default/` under the same `DataDir`, set via `cld auth
+  set-token`. It is never per-project and never in-container.
+- **user-default never touches the host's real `~/.claude`.** cld does not
+  read or write it; you populate `user-default/` yourself.
+- **A change made inside a container only ever reaches that project's own
+  per-project backup** — never another project's, and never user-default. So
+  installing a skill inside one devcontainer cannot leak into a different
+  project, and cannot become the new baseline everyone else gets.
+- **`.credentials.json` is in-container only** (excluded from both
+  user-default and per-project — see "Authentication" below), so one
+  container's rotating OAuth session can never invalidate another's.
+
+Below, `claude.Classify`'s bucket names (**Global**/**Project**/**Skip**) map
+onto these tiers as: Global and Project both live under a project's
+**per-project** dir (in different subdirectories); Skip means
+**in-container**-only. "Global" is a legacy name — see the very next
+paragraph for why it does *not* mean "shared across every devcontainer".
+
+Every top-level entry in the config dir is classified by `claude.Classify`
+into one of three buckets:
 
 | Bucket | Backup location | Shared across devcontainers? |
 |---|---|---|
@@ -90,20 +122,13 @@ from stdin; works from inside a devcontainer over the control-API relay) or via
 ## Notes
 
 - **Only the 8 checked entries are backed up at all** beyond transcripts/file
-  history, and even those land in the same isolated per-project backup dir —
-  never a bucket shared across every devcontainer. A container is only ever
-  seeded from its *own* project's prior backup (same devcontainer name), never
-  from another project's.
-- cld's own **user-default** dir (`Config.UserDefaultDir`, under `DataDir` —
-  see `docs/architecture.md`) is the actual source of truth for
-  `settings.json`/`CLAUDE.md`/`agents/`/`commands/`/`output-styles/`, and it is
-  **not** the host's `~/.claude` — cld never reads or writes that. The daemon
-  mirrors user-default into every session on each provision
-  (`install_claude_config`), sanitized and overwriting whatever a restore
-  brought back. So editing files under user-default is the supported way to
-  change those five for every project; a change made inside a container is
-  backed up (for that project's own next restore) but does not become the new
-  baseline for other projects.
+  history — see "The three tiers" above for where each tier lives and how
+  state flows between them.
+- `settings.json`/`CLAUDE.md`/`agents/`/`commands/`/`output-styles/` are also
+  installed from user-default on every provision (`install_claude_config`),
+  overwriting whatever a per-project restore brought back for those five —
+  so editing user-default is the supported way to change them for every
+  project at once.
 - This list reflects what we currently know Claude Code writes. Since the
   classifier defaults unknown entries to **Skip**, a newly added Claude Code
   directory is safely excluded from the backup until it is deliberately added
