@@ -87,17 +87,17 @@ func TestSeedSettings(t *testing.T) {
 }
 
 func TestClassify(t *testing.T) {
-	t.Run("project state", func(t *testing.T) {
-		require.Equal(t, claude.BackupProject, claude.Classify("projects/-workspace/abc.jsonl"))
-		require.Equal(t, claude.BackupProject, claude.Classify("file-history/xyz/1"))
+	t.Run("transcript state", func(t *testing.T) {
+		require.Equal(t, claude.BackupTranscript, claude.Classify("projects/-workspace/abc.jsonl"))
+		require.Equal(t, claude.BackupTranscript, claude.Classify("file-history/xyz/1"))
 	})
-	t.Run("global state", func(t *testing.T) {
-		require.Equal(t, claude.BackupGlobal, claude.Classify(".claude.json"))
-		require.Equal(t, claude.BackupGlobal, claude.Classify("settings.json"))
-		require.Equal(t, claude.BackupGlobal, claude.Classify("agents/foo.md"))
-		require.Equal(t, claude.BackupGlobal, claude.Classify("CLAUDE.md"))
-		require.Equal(t, claude.BackupGlobal, claude.Classify("skills/x/SKILL.md"))
-		require.Equal(t, claude.BackupGlobal, claude.Classify("plugins/p/manifest.json"))
+	t.Run("settings state", func(t *testing.T) {
+		require.Equal(t, claude.BackupSettings, claude.Classify(".claude.json"))
+		require.Equal(t, claude.BackupSettings, claude.Classify("settings.json"))
+		require.Equal(t, claude.BackupSettings, claude.Classify("agents/foo.md"))
+		require.Equal(t, claude.BackupSettings, claude.Classify("CLAUDE.md"))
+		require.Equal(t, claude.BackupSettings, claude.Classify("skills/x/SKILL.md"))
+		require.Equal(t, claude.BackupSettings, claude.Classify("plugins/p/manifest.json"))
 	})
 	t.Run("skipped state", func(t *testing.T) {
 		require.Equal(t, claude.BackupSkip, claude.Classify("shell-snapshots/x"))

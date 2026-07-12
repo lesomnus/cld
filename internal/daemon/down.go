@@ -52,7 +52,7 @@ func (d *Daemon) remove_devcontainer(ctx context.Context, e *entry, purge bool) 
 	// out of it, so it must run before removal. A purge deletes that backup, so
 	// it does not bother taking one.
 	if !purge && e.item.Workspace != "" {
-		d.copy_out(ctx, e, dirty{settings: true, project: true})
+		d.copy_out(ctx, e, dirty{settings: true, transcript: true})
 	}
 	if e.watch_stop != nil {
 		e.watch_stop()

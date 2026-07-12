@@ -96,10 +96,12 @@ func (e *entry) snapshot() Item {
 // the last copy-out. Both kinds land in the SAME isolated per-project backup
 // dir, keyed by backup_key (see copy_out) — never a bucket shared across
 // projects — so settings/skills/etc. changed inside one project's container
-// can only ever affect that project's own backup.
+// can only ever affect that project's own backup. The two fields are tracked
+// separately purely to avoid re-fetching a (potentially huge) transcript tree
+// just because settings.json changed, and vice versa.
 type dirty struct {
-	settings bool
-	project  bool
+	settings   bool
+	transcript bool
 }
 
 type Daemon struct {

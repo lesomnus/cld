@@ -29,50 +29,67 @@ Invariants that follow from this:
   user-default and per-project — see "Authentication" below), so one
   container's rotating OAuth session can never invalidate another's.
 
-Below, `claude.Classify`'s bucket names (**Global**/**Project**/**Skip**) map
-onto these tiers as: Global and Project both live under a project's
-**per-project** dir (in different subdirectories); Skip means
-**in-container**-only. "Global" is a legacy name — see the very next
-paragraph for why it does *not* mean "shared across every devcontainer".
+Below, `claude.Classify`'s bucket names (**Settings**/**Transcript**/**Skip**)
+map onto these tiers as: Settings and Transcript both live under a project's
+**per-project** dir, in different subdirectories — they're split only because
+they need different fetch/restore handling and independent dirty-tracking
+(see "Why two buckets for one tier?" below), not because they go to different
+places. Skip means **in-container**-only.
 
 Every top-level entry in the config dir is classified by `claude.Classify`
 into one of three buckets:
 
 | Bucket | Backup location | Shared across devcontainers? |
 |---|---|---|
-| **Project** | `<project-backup>/projects/<enc>/`, `<project-backup>/file-history/` | only same-named containers |
-| **Global** | `<project-backup>/settings/` | only same-named containers |
+| **Transcript** | `<project-backup>/projects/<enc>/`, `<project-backup>/file-history/` | only same-named containers |
+| **Settings** | `<project-backup>/settings/` | only same-named containers |
 | **Skip** | not backed up | n/a |
 
 `<project-backup>` is `internal/syncer.Layout.ProjectDir`, keyed by
 devcontainer name (`Daemon.backup_key`) — the **same** directory for both
-buckets. Despite the name, **Global is never a bucket shared across every
-devcontainer**: it is a project-independent-*looking* category of state
-(settings, not conversations) that still lands in that project's own isolated
-backup, so a change made inside one project's container can only ever affect
-that project's own future restores — never another project's. The classifier
-is still an **allowlist** — only entries explicitly named in `global_entries`
-go Global; anything else defaults to **Skip** — but that is to keep new Claude
-Code directories from silently entering the backup at all the moment upstream
-adds them, not to guard a shared bucket. The `✓ allow (global)` column below
-marks exactly the entries on that allowlist.
+buckets. Settings is a project-independent-*looking* category of state
+(settings, not conversations), but it still lands in that project's own
+isolated backup, so a change made inside one project's container can only
+ever affect that project's own future restores — never another project's.
+The classifier is an **allowlist** — only entries explicitly named in
+`settings_entries` go Settings; anything else defaults to **Skip** — so a new
+Claude Code directory never silently enters the backup the moment upstream
+adds it. The `✓ allow (settings)` column below marks exactly the entries on
+that allowlist.
+
+### Why two buckets for one tier?
+
+Settings and Transcript both end up under the same per-project dir, so why
+not one bucket? Because despite the shared destination, they need genuinely
+different handling:
+- **Fetch**: Transcript is two fixed, known paths (`projects/<enc>`,
+  `file-history`), copied out directly. Settings is a variable set of
+  top-level names, so it's `ls`'d and filtered against the allowlist first.
+- **Dirty-tracking**: the daemon tracks them with separate `dirty.settings`
+  / `dirty.transcript` flags so a `settings.json` edit doesn't trigger
+  re-fetching a (potentially huge) transcript tree, and vice versa.
+- **Restore**: Settings is merged in wholesale. Transcript needs its encoded
+  directory renamed and the `cwd` strings inside `.jsonl` files rewritten
+  when the workspace path has moved (see `write_backup`'s `rewrite` param).
+- **Sanitization**: only Settings' `.claude.json` gets its `projects` map
+  stripped (`sanitize_settings_state`) before being stored.
 
 ## Entries produced by Claude Code
 
-| Entry | Kind | Holds | Bucket | ✓ allow (global) |
+| Entry | Kind | Holds | Bucket | ✓ allow (settings) |
 |---|---|---|---|---|
 | `.credentials.json` | file | claude.ai OAuth session (rotating refresh token) | Skip | |
-| `.claude.json` | file | global config (`projects` map stripped on backup) | Global | ✓ |
-| `settings.json` | file | user settings (model, permissions, hooks, …) | Global | ✓ |
+| `.claude.json` | file | user-level config (`projects` map stripped on backup) | Settings | ✓ |
+| `settings.json` | file | user settings (model, permissions, hooks, …) | Settings | ✓ |
 | `settings.local.json` | file | machine-local settings overrides | Skip | |
-| `CLAUDE.md` | file | global memory / instructions | Global | ✓ |
-| `agents/` | dir | user-level subagent definitions | Global | ✓ |
-| `commands/` | dir | user-level slash commands | Global | ✓ |
-| `skills/` | dir | user-level skills | Global | ✓ |
-| `output-styles/` | dir | user-level output styles | Global | ✓ |
-| `plugins/` | dir | installed plugins / marketplaces | Global | ✓ |
-| `projects/<enc>/` | dir | **conversation transcripts** (`*.jsonl`), keyed by workspace path | Project | |
-| `file-history/` | dir | edited-file history / checkpoints | Project | |
+| `CLAUDE.md` | file | user-level memory / instructions | Settings | ✓ |
+| `agents/` | dir | user-level subagent definitions | Settings | ✓ |
+| `commands/` | dir | user-level slash commands | Settings | ✓ |
+| `skills/` | dir | user-level skills | Settings | ✓ |
+| `output-styles/` | dir | user-level output styles | Settings | ✓ |
+| `plugins/` | dir | installed plugins / marketplaces | Settings | ✓ |
+| `projects/<enc>/` | dir | **conversation transcripts** (`*.jsonl`), keyed by workspace path | Transcript | |
+| `file-history/` | dir | edited-file history / checkpoints | Transcript | |
 | `jobs/` | dir | **FleetView background-session records** (`state.json`, `timeline.jsonl`) | Skip | |
 | `tasks/` | dir | subagent task transcripts for background jobs | Skip | |
 | `backups/` | dir | Claude Code file-edit backups | Skip | |
@@ -132,4 +149,4 @@ from stdin; works from inside a devcontainer over the control-API relay) or via
 - This list reflects what we currently know Claude Code writes. Since the
   classifier defaults unknown entries to **Skip**, a newly added Claude Code
   directory is safely excluded from the backup until it is deliberately added
-  to `global_entries`.
+  to `settings_entries`.

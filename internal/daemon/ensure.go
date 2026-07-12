@@ -238,7 +238,7 @@ func (d *Daemon) stop(ctx context.Context, e *entry) {
 		e.watch_stop = nil
 	}
 	if e.item.Workspace != "" {
-		d.copy_out(ctx, e, dirty{settings: true, project: true})
+		d.copy_out(ctx, e, dirty{settings: true, transcript: true})
 	}
 	if e.item.Name != "" {
 		d.tmux.KillSession(ctx, devc.SessionName(e.item.Name))

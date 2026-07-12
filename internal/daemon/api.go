@@ -152,7 +152,7 @@ func (d *Daemon) handle_notify_exited(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if e.item.Workspace != "" {
-			d.copy_out(d.base_ctx, e, dirty{settings: true, project: true})
+			d.copy_out(d.base_ctx, e, dirty{settings: true, transcript: true})
 		}
 		if code != 0 {
 			// A non-zero exit is a crash or a failed launch, not the user

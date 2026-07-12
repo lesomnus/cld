@@ -73,7 +73,7 @@ func short_hash(s string) string {
 func (e *entry) mark(p dirty) {
 	e.dirty_mu.Lock()
 	e.dirty.settings = e.dirty.settings || p.settings
-	e.dirty.project = e.dirty.project || p.project
+	e.dirty.transcript = e.dirty.transcript || p.transcript
 	e.dirty_mu.Unlock()
 
 	select {
@@ -110,7 +110,7 @@ func (d *Daemon) sync_loop(ctx context.Context, e *entry) {
 		}
 
 		p := e.take()
-		if !p.settings && !p.project {
+		if !p.settings && !p.transcript {
 			continue
 		}
 		e.mbox.post(func() { d.copy_out(context.WithoutCancel(ctx), e, p) })
@@ -123,11 +123,11 @@ func (d *Daemon) sync_loop(ctx context.Context, e *entry) {
 // key never write it at once. Settings-like state (settings.json, .claude.json,
 // skills/, plugins/, ...) is copied out here too, but always into this SAME
 // isolated dir — never a bucket shared across projects — so it can only ever
-// affect this project's own future restores. The host's real ~/.claude,
+// affect this project's own future restores. cld's own user-default dir,
 // mirrored in on every provision via install_claude_config, is still the
 // authoritative source for the parts of that state a user sets manually.
 func (d *Daemon) copy_out(ctx context.Context, e *entry, p dirty) {
-	if !p.settings && !p.project {
+	if !p.settings && !p.transcript {
 		return
 	}
 
@@ -137,7 +137,7 @@ func (d *Daemon) copy_out(ctx context.Context, e *entry, p dirty) {
 	l.Lock()
 	defer l.Unlock()
 
-	err := syncer.CopyOut(ctx, d.cli, e.id, e.cfg_dir, d.layout(e), e.item.Workspace, p.settings, p.project)
+	err := syncer.CopyOut(ctx, d.cli, e.id, e.cfg_dir, d.layout(e), e.item.Workspace, p.settings, p.transcript)
 	if err != nil && ctx.Err() == nil {
 		d.log.Warn("copy-out failed",
 			slog.String("name", e.item.Name), slog.String("error", err.Error()))
@@ -234,10 +234,10 @@ func (d *Daemon) watch_once(ctx context.Context, e *entry, id string) (clean boo
 			continue
 		}
 		switch claude.Classify(line) {
-		case claude.BackupGlobal:
+		case claude.BackupSettings:
 			e.mark(dirty{settings: true})
-		case claude.BackupProject:
-			e.mark(dirty{project: true})
+		case claude.BackupTranscript:
+			e.mark(dirty{transcript: true})
 		}
 	}
 	serr := sc.Err()
@@ -269,7 +269,7 @@ func (d *Daemon) poll_container(ctx context.Context, e *entry) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			e.mark(dirty{settings: true, project: true})
+			e.mark(dirty{settings: true, transcript: true})
 		}
 	}
 }

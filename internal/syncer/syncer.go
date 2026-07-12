@@ -98,10 +98,10 @@ func copy_out_transcripts(ctx context.Context, cli *client.Client, ctr string, c
 	return os.WriteFile(filepath.Join(l.ProjectDir, meta_name), meta, 0o644)
 }
 
-// copy_out_settings copies only the BackupGlobal-classified top-level entries
-// of the config dir into this project's own settingsDir, fetching each one
-// individually so the (potentially huge) projects/ and file-history/ trees
-// are never streamed out just to be discarded.
+// copy_out_settings copies only the BackupSettings-classified top-level
+// entries of the config dir into this project's own settingsDir, fetching
+// each one individually so the (potentially huge) projects/ and
+// file-history/ trees are never streamed out just to be discarded.
 func copy_out_settings(ctx context.Context, cli *client.Client, ctr string, cfg_dir string, l Layout) error {
 	names, err := list_dir(ctx, cli, ctr, cfg_dir)
 	if err != nil {
@@ -110,7 +110,7 @@ func copy_out_settings(ctx context.Context, cli *client.Client, ctr string, cfg_
 
 	dst := filepath.Join(l.ProjectDir, settingsDir)
 	for _, name := range names {
-		if claude.Classify(name) != claude.BackupGlobal {
+		if claude.Classify(name) != claude.BackupSettings {
 			continue
 		}
 		if err := fetch(ctx, cli, ctr, path.Join(cfg_dir, name), dst); err != nil {
