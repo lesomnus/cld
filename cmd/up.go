@@ -2,14 +2,17 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/lesomnus/cld/internal/daemon"
 	"github.com/lesomnus/cld/internal/devcup"
+	"github.com/lesomnus/cld/internal/tui"
 	"github.com/lesomnus/xli"
 	"github.com/lesomnus/xli/arg"
 	"github.com/lesomnus/xli/flg"
@@ -38,29 +41,27 @@ func NewCmdUp() *xli.Command {
 				return err
 			}
 			extra, _ := arg.Get[[]string](cmd, "args")
+
+			// Unless the user already pointed the CLI at a config, discover the
+			// workspace's devcontainer config(s) and, when there is more than
+			// one, let them pick which to provision from.
+			if !hasConfigArg(extra) {
+				picked, proceed, err := resolveConfig(cmd, workspace)
+				if err != nil {
+					return err
+				}
+				if !proceed {
+					return nil // the user cancelled the picker
+				}
+				extra = append(extra, picked...)
+			}
+
 			o := devcup.Options{
 				Workspace:   workspace,
 				Args:        extra,
 				RunnerImage: c.Up.Image,
 				Stdout:      cmd,
 				Stderr:      cmd.ErrWriter,
-			}
-
-			// A workspace without its own config is provisioned from a built-in
-			// minimal default named after the directory, written into the
-			// workspace at .devcontainer/devcontainer.json (best-effort
-			// git-excluded). Writing a real file — rather than an ephemeral
-			// --override-config — means the devcontainer.config_file label points
-			// at a path the CLI, VS Code, and the daemon can all read back, so
-			// the container is openable in VS Code.
-			if !devcup.HasConfig(workspace) {
-				p, err := devcup.WriteDefaultConfig(workspace)
-				if err != nil {
-					return z.Err(err, "prepare default devcontainer config")
-				}
-				fmt.Fprintf(cmd.ErrWriter,
-					"cld: no devcontainer config in %s; wrote built-in default to %s (name=%s)\n",
-					workspace, p, filepath.Base(workspace))
 			}
 
 			cli, err := client.New(client.FromEnv)
@@ -104,6 +105,87 @@ func NewCmdUp() *xli.Command {
 
 			return attachTo(ctx, c, item.Name)
 		}),
+	}
+}
+
+// hasConfigArg reports whether the extra args already point the devcontainer
+// CLI at a config, in which case cld leaves discovery/selection alone.
+func hasConfigArg(args []string) bool {
+	for _, a := range args {
+		if a == "--config" || a == "--override-config" ||
+			strings.HasPrefix(a, "--config=") || strings.HasPrefix(a, "--override-config=") {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveConfig decides which devcontainer config `up` should provision from
+// and returns the extra `devcontainer up` args needed to select it. proceed is
+// false when the user cancels the picker (the caller should stop without
+// provisioning). The cases:
+//
+//   - none:     write the built-in default into the workspace, no extra args.
+//   - one:      a standard-location config needs nothing (the CLI auto-detects
+//     it); a lone sub-folder config is passed with --config.
+//   - multiple: prompt with a TUI picker on a terminal, and pass the pick with
+//     --config so it is honored over the CLI's own auto-detection; without a
+//     terminal, error and ask the user to pass --config explicitly.
+func resolveConfig(cmd *xli.Command, workspace string) (extra []string, proceed bool, err error) {
+	configs := devcup.DiscoverConfigs(workspace)
+	switch len(configs) {
+	case 0:
+		// A workspace without its own config is provisioned from a built-in
+		// minimal default named after the directory, written into the workspace
+		// at .devcontainer/devcontainer.json (best-effort git-excluded). Writing
+		// a real file — rather than an ephemeral --override-config — means the
+		// devcontainer.config_file label points at a path the CLI, VS Code, and
+		// the daemon can all read back, so the container is openable in VS Code.
+		p, err := devcup.WriteDefaultConfig(workspace)
+		if err != nil {
+			return nil, false, z.Err(err, "prepare default devcontainer config")
+		}
+		fmt.Fprintf(cmd.ErrWriter,
+			"%s: no devcontainer config in %s; wrote built-in default to %s (name=%s)\n",
+			tui.Tag(), workspace, p, filepath.Base(workspace))
+		return nil, true, nil
+
+	case 1:
+		c := configs[0]
+		if c.Standard {
+			return nil, true, nil // the CLI auto-detects it; nothing to add
+		}
+		// A lone sub-folder config is not auto-detected — point the CLI at it.
+		fmt.Fprintf(cmd.ErrWriter, "%s: using devcontainer config %s\n", tui.Tag(), c.Rel)
+		return []string{"--config", c.Path}, true, nil
+
+	default:
+		if !tui.Interactive() {
+			return nil, false, fmt.Errorf(
+				"found %d devcontainer configs in %s; pass one explicitly, e.g. `--config %s`",
+				len(configs), workspace, configs[0].Rel)
+		}
+		choices := make([]tui.Choice, len(configs))
+		for i, c := range configs {
+			desc := "sub-folder config"
+			if c.Standard {
+				desc = "standard location"
+			}
+			choices[i] = tui.Choice{Title: c.Rel, Desc: desc}
+		}
+		idx, err := tui.Select("Select a devcontainer config", choices)
+		if errors.Is(err, tui.ErrAborted) {
+			fmt.Fprintf(cmd.ErrWriter, "%s: aborted\n", tui.Tag())
+			return nil, false, nil
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		c := configs[idx]
+		fmt.Fprintf(cmd.ErrWriter, "%s: using devcontainer config %s\n", tui.Tag(), c.Rel)
+		// Pass --config even for a standard location so the pick wins over the
+		// CLI preferring .devcontainer/devcontainer.json when both exist.
+		return []string{"--config", c.Path}, true, nil
 	}
 }
 

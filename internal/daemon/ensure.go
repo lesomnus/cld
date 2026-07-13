@@ -316,10 +316,7 @@ func (d *Daemon) resolve(ctx context.Context, e *entry, id string, labels map[st
 		mounts = append(mounts, devc.Mount{Source: m.Source, Destination: m.Destination})
 	}
 
-	var config_file []byte
-	if p := labels[devc.LabelConfigFile]; p != "" {
-		config_file, _ = os.ReadFile(p)
-	}
+	config_file := d.read_config_file(ctx, id, labels[devc.LabelConfigFile], mounts)
 	e.dev_name = devc.ProjectName(config_file)
 	e.item.Workspace = devc.WorkspaceFolder(config_file, e.item.LocalFolder, mounts)
 	if e.item.Workspace == "" {
@@ -627,6 +624,35 @@ func (d *Daemon) seed_file(ctx context.Context, e *entry, id string, name string
 		return nil
 	}
 	return dockerx.WriteFile(ctx, d.cli, id, e.cfg_dir, name, mode, e.uid, e.gid, seeded)
+}
+
+// read_config_file loads the devcontainer.json the container was built from,
+// given the host path recorded in the devcontainer.config_file label. It first
+// reads that host path directly — correct when the daemon runs on the host —
+// and, when that fails (a containerized daemon cannot see host paths), falls
+// back to reading the file from inside the running container, where the project
+// is normally bind-mounted. The fall-back is best-effort: it needs the config
+// to sit under one of the container's mounts, which most devcontainers satisfy
+// but the spec does not guarantee. Returns nil when neither source is readable,
+// leaving the workspace folder to be resolved from the mounts alone.
+func (d *Daemon) read_config_file(ctx context.Context, id, host_path string, mounts []devc.Mount) []byte {
+	if host_path == "" {
+		return nil
+	}
+	if b, err := os.ReadFile(host_path); err == nil {
+		return b
+	}
+	// The daemon could not read the host path (it is containerized): map the
+	// config's host path into the container and read it there.
+	in := devc.ContainerPath(host_path, mounts)
+	if in == "" {
+		return nil
+	}
+	b, ok, err := dockerx.ReadFile(ctx, d.cli, id, in)
+	if err != nil || !ok {
+		return nil
+	}
+	return b
 }
 
 // ensure_session creates the host tmux session whose pane runs cld's own

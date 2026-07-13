@@ -118,6 +118,26 @@ func TestRemoteUser(t *testing.T) {
 	})
 }
 
+func TestContainerPath(t *testing.T) {
+	mounts := []devc.Mount{
+		{Source: "/home/me/workspaces", Destination: "/workspaces"},
+		{Source: "/home/me/workspaces/holiday", Destination: "/workspace"},
+	}
+	t.Run("maps a file under the deepest matching mount", func(t *testing.T) {
+		// The project root is bound at /workspace, so its config maps there even
+		// though a shallower mount also matches.
+		v := devc.ContainerPath("/home/me/workspaces/holiday/.devcontainer/devcontainer.json", mounts)
+		require.Equal(t, "/workspace/.devcontainer/devcontainer.json", v)
+	})
+	t.Run("maps through a shallower mount when it is the only match", func(t *testing.T) {
+		v := devc.ContainerPath("/home/me/workspaces/other/.devcontainer.json", mounts)
+		require.Equal(t, "/workspaces/other/.devcontainer.json", v)
+	})
+	t.Run("returns empty when under no mount", func(t *testing.T) {
+		require.Equal(t, "", devc.ContainerPath("/etc/passwd", mounts))
+	})
+}
+
 func TestWorkspaceFolder(t *testing.T) {
 	mounts := []devc.Mount{
 		{Source: "/home/hypnos/.claude", Destination: "/home/hypnos/.claude"},

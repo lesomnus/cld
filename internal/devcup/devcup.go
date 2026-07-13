@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -28,20 +30,65 @@ func (o *Options) up_args() []string {
 	return append([]string{"up", "--workspace-folder", o.Workspace}, o.Args...)
 }
 
-// HasConfig reports whether the workspace has a devcontainer configuration at
-// one of the two standard locations. (Sub-folder configs under .devcontainer/
-// exist in the spec but need an explicit --config, which callers can pass via
-// Args.)
+// HasConfig reports whether the workspace has any devcontainer configuration —
+// one of the two standard locations or a sub-folder config under .devcontainer/.
 func HasConfig(workspace string) bool {
-	for _, p := range []string{
-		workspace + "/.devcontainer/devcontainer.json",
-		workspace + "/.devcontainer.json",
-	} {
-		if _, err := os.Stat(p); err == nil {
-			return true
+	return len(DiscoverConfigs(workspace)) > 0
+}
+
+// Config is a devcontainer configuration discovered in a workspace.
+type Config struct {
+	// Path is the config file's absolute host path.
+	Path string
+	// Rel is Path relative to the workspace, e.g. ".devcontainer/devcontainer.json"
+	// or ".devcontainer/go/devcontainer.json".
+	Rel string
+	// Label is a short human name for pickers: "default" / ".devcontainer.json"
+	// for the standard locations, or the sub-folder name for the rest.
+	Label string
+	// Standard is true for the two locations the devcontainer CLI auto-detects
+	// (.devcontainer/devcontainer.json and .devcontainer.json); a false value
+	// means the config must be passed to the CLI with --config.
+	Standard bool
+}
+
+// DiscoverConfigs enumerates every devcontainer.json in the workspace the
+// devcontainer spec recognizes, in a stable order:
+//
+//  1. .devcontainer/devcontainer.json   (primary standard location)
+//  2. .devcontainer.json                (root standard location)
+//  3. .devcontainer/<folder>/devcontainer.json (sub-folder configs, sorted)
+//
+// The two standard locations are auto-detected by the CLI; the sub-folder
+// configs exist in the spec but need an explicit --config, which is why each
+// result carries Standard and its Rel path.
+func DiscoverConfigs(workspace string) []Config {
+	var out []Config
+	add := func(rel, label string, standard bool) {
+		p := filepath.Join(workspace, rel)
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			out = append(out, Config{Path: p, Rel: rel, Label: label, Standard: standard})
 		}
 	}
-	return false
+
+	add(filepath.Join(".devcontainer", "devcontainer.json"), "default", true)
+	add(".devcontainer.json", ".devcontainer.json", true)
+
+	// Sub-folder configs live exactly one level under .devcontainer/, as
+	// .devcontainer/<folder>/devcontainer.json. Enumerate them sorted by folder
+	// so the picker order is deterministic.
+	entries, _ := os.ReadDir(filepath.Join(workspace, ".devcontainer"))
+	var folders []string
+	for _, e := range entries {
+		if e.IsDir() {
+			folders = append(folders, e.Name())
+		}
+	}
+	sort.Strings(folders)
+	for _, name := range folders {
+		add(filepath.Join(".devcontainer", name, "devcontainer.json"), name, false)
+	}
+	return out
 }
 
 // Runner is one way of executing the devcontainer CLI.

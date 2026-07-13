@@ -196,10 +196,18 @@ func WorkspaceFolder(config_file []byte, local_folder string, mounts []Mount) st
 		}
 	}
 
-	// Map the local folder through the mount it sits under. Prefer the longest
-	// matching source so a nested project resolves to the deeper mount (e.g.
-	// /workspace/src/app under a repo-root bind) rather than a shallower one.
-	want := filepath.Clean(local_folder)
+	// With no usable workspaceFolder, map the local folder through the mount it
+	// sits under.
+	return ContainerPath(local_folder, mounts)
+}
+
+// ContainerPath maps a host path to its location inside the container through
+// the bind mount it sits under, or "" when the path is under no mount. It
+// prefers the longest matching source so a nested path resolves to the deeper
+// mount (e.g. /workspace/src/app under a repo-root bind) rather than a
+// shallower one.
+func ContainerPath(host string, mounts []Mount) string {
+	want := filepath.Clean(host)
 	best := ""
 	bestLen := -1
 	for _, m := range mounts {

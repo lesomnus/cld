@@ -2,11 +2,13 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
 
 	"github.com/lesomnus/cld/internal/daemon"
+	"github.com/lesomnus/cld/internal/tui"
 	"github.com/lesomnus/xli"
 	"github.com/lesomnus/xli/arg"
 	"github.com/lesomnus/xli/flg"
@@ -75,9 +77,8 @@ func down_all(ctx context.Context, cmd *xli.Command, socket string, yes bool) er
 		for _, it := range items {
 			fmt.Fprintf(cmd.ErrWriter, "  - %s\n", it.Name)
 		}
-		fmt.Fprint(cmd.ErrWriter, "Proceed? [y/N] ")
-		if !confirmed(cmd.ReadCloser) {
-			fmt.Fprintln(cmd.ErrWriter, "cld: aborted")
+		if !confirmDown(cmd) {
+			fmt.Fprintf(cmd.ErrWriter, "%s: aborted\n", tui.Tag())
 			return nil
 		}
 	}
@@ -111,6 +112,22 @@ func report_teardown(cmd *xli.Command, results []daemon.DownResult, past, base s
 		return fmt.Errorf("%d of %d devcontainer(s) failed to %s", failed, len(results), base)
 	}
 	return nil
+}
+
+// confirmDown asks for consent before the bulk teardown. On a terminal it shows
+// the interactive yes/no widget (defaulting to no); otherwise it prints a plain
+// prompt and reads a y/yes line from stdin, so piped input and EOF still read as
+// "no" — nothing is removed without explicit consent.
+func confirmDown(cmd *xli.Command) bool {
+	if tui.Interactive() {
+		ok, err := tui.Confirm("Stop and remove these devcontainers?")
+		if errors.Is(err, tui.ErrAborted) {
+			return false
+		}
+		return err == nil && ok
+	}
+	fmt.Fprint(cmd.ErrWriter, "Proceed? [y/N] ")
+	return confirmed(cmd.ReadCloser)
 }
 
 // confirmed reports whether r's next line is an affirmative (y/yes,
