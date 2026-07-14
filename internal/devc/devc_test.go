@@ -17,11 +17,11 @@ func TestDisplayName(t *testing.T) {
 }
 
 func TestSessionName(t *testing.T) {
-	t.Run("prefixed", func(t *testing.T) {
-		require.Equal(t, "cld-foo", devc.SessionName("foo"))
+	t.Run("uses the name as-is", func(t *testing.T) {
+		require.Equal(t, "foo", devc.SessionName("foo"))
 	})
 	t.Run("tmux target characters are replaced", func(t *testing.T) {
-		require.Equal(t, "cld-foo_bar_baz", devc.SessionName("foo.bar:baz"))
+		require.Equal(t, "foo_bar_baz", devc.SessionName("foo.bar:baz"))
 	})
 }
 

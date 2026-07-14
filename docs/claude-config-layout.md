@@ -16,21 +16,22 @@ ownership and a one-way flow:
 | **in-container** | the container | `~/.cld/claude/...` inside the container (entries `claude.Classify` marks `BackupSkip`) | nothing outside ever writes it | nowhere — never leaves the container, never restored |
 
 Invariants that follow from this:
-- **Auth secrets are host-side, never per-project and never in-container** — a
-  broker login (`cld auth login`, `Config.BrokerCredentialsPath()`) and a
-  long-lived token (`cld auth set-token`, `Config.OAuthTokenStorePath()`) both
-  sit next to `user-default/` under the same `DataDir`. A session receives only a
-  short-lived access token (through the broker's proxy) or the long-lived token —
-  the rotating refresh token never leaves the daemon host.
+- **The default login is per-project, not global.** A container logs in for
+  itself and its `.credentials.json` is persisted to that project's own
+  per-project backup and restored on recreate. Because the backup is isolated
+  (one live container per project), one container's rotating OAuth session can
+  never invalidate another's — the very clash a globally-shared file would cause.
+- **The broker refresh token is host-side only** — the opt-in broker login
+  (`cld auth login`, `Config.BrokerCredentialsPath()`) sits next to
+  `user-default/` under `DataDir`. A broker session receives only a short-lived
+  access token through the proxy; the rotating refresh token never leaves the
+  daemon host, and never enters a container.
 - **user-default never touches the host's real `~/.claude`.** cld does not
   read or write it; you populate `user-default/` yourself.
 - **A change made inside a container only ever reaches that project's own
   per-project backup** — never another project's, and never user-default. So
   installing a skill inside one devcontainer cannot leak into a different
   project, and cannot become the new baseline everyone else gets.
-- **`.credentials.json` is in-container only** (excluded from both
-  user-default and per-project — see "Authentication" below), so one
-  container's rotating OAuth session can never invalidate another's.
 
 Below, `claude.Classify`'s bucket names (**Settings**/**Transcript**/**Skip**)
 map onto these tiers as: Settings and Transcript both live under a project's
@@ -81,7 +82,7 @@ different handling:
 
 | Entry | Kind | Holds | Bucket | ✓ allow (settings) |
 |---|---|---|---|---|
-| `.credentials.json` | file | claude.ai OAuth session (rotating refresh token) | Skip | |
+| `.credentials.json` | file | claude.ai OAuth session (rotating refresh token) | Settings | ✓ |
 | `.claude.json` | file | user-level config (`projects` map stripped on backup) | Settings | ✓ |
 | `settings.json` | file | user settings (model, permissions, hooks, …) | Settings | ✓ |
 | `settings.local.json` | file | machine-local settings overrides | Skip | |
@@ -130,16 +131,24 @@ the allowlist, so all are Skip.
 
 ## Authentication
 
-`.credentials.json` is **not** shared. It holds a claude.ai OAuth session whose
-refresh token rotates on every refresh, so one file shared across live containers
-makes each container's refresh invalidate the others' — forcing repeated browser
-logins. The same clash happens between *any* two holders of one refresh token, so
-cld keeps the refresh token in exactly one place. A session is authenticated by
-one of three means, in order of precedence:
+`.credentials.json` holds a claude.ai OAuth session whose refresh token rotates
+on every refresh, so *sharing one file across live containers* makes each
+container's refresh invalidate the others' — forcing repeated logins. cld avoids
+that clash without giving up persistence, via two paths:
 
-1. **Broker — `cld auth login`.** The daemon owns a single Claude-subscription
-   login (`Config.BrokerCredentialsPath()`, host-side, mode 0600), refreshes it
-   centrally at the subscription token endpoint, and every session reaches
+1. **Per-container login (default).** A session starts unauthenticated and
+   Claude Code prompts a login inside the container. That `.credentials.json` is
+   classified **Settings**, so it is backed up to *this project's own* isolated
+   per-project dir and restored into a recreated container of the same project —
+   you log in once per project, not once per container lifetime. This is safe
+   precisely because the backup is per-project and there is normally one live
+   container per project: no two live containers share the file, so no rotation
+   clash. Restore only ever runs into a container with no state of its own, so an
+   older backup never clobbers a live container's freshly-rotated token.
+2. **Broker — `cld auth login` + `--proxy` (opt-in).** To share ONE
+   Claude-subscription login across sessions, the daemon owns a single login
+   (`Config.BrokerCredentialsPath()`, host-side, mode 0600), refreshes it
+   centrally at the subscription token endpoint, and an opted-in session reaches
    Anthropic through a per-container reverse proxy (`internal/broker`, injected as
    `ANTHROPIC_BASE_URL`) that rewrites the `Authorization` header with the current
    short-lived access token. No container ever holds the refresh token, and
@@ -149,22 +158,18 @@ one of three means, in order of precedence:
    lineage the daemon owns from birth — the host's own `~/.claude` is never
    touched. (`cld auth login --from <file>` instead imports an existing
    credentials file, *moving* it — the source is deleted so the host and daemon
-   can't share one refresh token.) Requires the in-container relay
-   (`auth.remote_control`, arch match); otherwise cld falls back to (2).
-2. **Long-lived token.** `CLAUDE_CODE_OAUTH_TOKEN`, injected from a `claude
-   setup-token` token set with `cld auth set-token` (stored at
-   `Config.OAuthTokenStorePath()`) or configured as `auth.oauth_token_file`. No
-   container refreshes it, so there is nothing to rotate; the trade-off is a
-   narrower scope than a full subscription login. The daemon prefers the
-   `set-token` value over `auth.oauth_token_file` when both are present.
-3. **Nothing.** With no broker login and no token, a session starts
-   unauthenticated and Claude Code prompts a login inside the container. That
-   `.credentials.json` stays in that container (Skip — never backed up or shared),
-   so per-container logins never collide with each other or the host.
+   can't share one refresh token.) The proxy is **opt-in per project**: a session
+   uses it only when the project enabled it with `cld up --proxy` / `cld it
+   --proxy` (remembered under `Config.ProxyStateDir()`), a broker login exists,
+   and the in-container relay can run (`auth.remote_control`, arch match). It is
+   opt-in because pointing `ANTHROPIC_BASE_URL` at a non-first-party endpoint
+   makes Claude Code degrade its UI and disable some features; `--no-proxy`
+   switches a project back to (1). While a project is in proxy mode the container
+   never logs in, so it writes no `.credentials.json` to persist.
 
 ## Notes
 
-- **Only the 8 checked entries are backed up at all** beyond transcripts/file
+- **Only the 9 checked entries are backed up at all** beyond transcripts/file
   history — see "The three tiers" above for where each tier lives and how
   state flows between them.
 - `settings.json`/`CLAUDE.md`/`agents/`/`commands/`/`output-styles/` are also

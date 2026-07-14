@@ -350,12 +350,12 @@ func TestDaemon(t *testing.T) {
 		require.NoError(t, err)
 		require.Contains(t, string(data), `"cwd":"/workspace"`)
 
-		// Credentials are per-container: the watcher skips .credentials.json, so
-		// the rotating OAuth session never reaches even this project's own
-		// settings backup.
-		matches, err := filepath.Glob(filepath.Join(cfg.DataDir, "projects", "*", "settings", ".credentials.json"))
-		require.NoError(t, err)
-		require.Empty(t, matches, "credentials must not be synced to the settings backup")
+		// Credentials ARE synced to this project's own (isolated) settings
+		// backup, so a recreated container can resume the same login.
+		wait_for(t, 20*time.Second, "credentials in settings backup", func() bool {
+			matches, _ := filepath.Glob(filepath.Join(cfg.DataDir, "projects", "*", "settings", ".credentials.json"))
+			return len(matches) > 0
+		})
 	})
 	t.Run("restores the backup into a recreated container", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -383,12 +383,13 @@ func TestDaemon(t *testing.T) {
 		require.Equal(t, 0, code)
 		require.Contains(t, out, `"cwd":"/workspace"`)
 
-		// Credentials are NOT restored from the backup (they are per-container
-		// now; auth comes from the injected token), so the backed-up "secret"
-		// must not reappear in the recreated container.
-		out, _, err = dockerx.ExecOutput(t.Context(), cli, ctr2, "", []string{"cat", "/root/.cld/claude/.credentials.json"})
+		// Credentials ARE restored from the isolated per-project backup, so the
+		// recreated container resumes the same login instead of prompting a fresh
+		// one — the backed-up "secret" reappears.
+		out, code, err = dockerx.ExecOutput(t.Context(), cli, ctr2, "", []string{"cat", "/root/.cld/claude/.credentials.json"})
 		require.NoError(t, err)
-		require.NotContains(t, out, "secret")
+		require.Equal(t, 0, code)
+		require.Contains(t, out, "secret")
 
 		// History exists now, so the new session resumes the conversation.
 		wait_for(t, 30*time.Second, "claude resumed in pane", func() bool {
@@ -401,11 +402,11 @@ func TestDaemon(t *testing.T) {
 	})
 }
 
-// TestLegacyCredentialBootstrap: a container whose default ~/.claude carries
-// credentials (a user's bind mount) gets them copied into cld's own config
-// dir — but only when no backup supplied them (backup wins; hence the
-// isolated daemon with an empty DataDir).
-func TestLegacyCredentialBootstrap(t *testing.T) {
+// TestNoLegacyCredentialBootstrap: by default cld no longer copies a legacy
+// ~/.claude/.credentials.json (a user's bind mount) into its own config dir —
+// each container logs in for itself and cld persists that login per project. So
+// the legacy file must NOT appear in cld's config dir.
+func TestNoLegacyCredentialBootstrap(t *testing.T) {
 	cli := require_docker(t)
 	pull_image(t, cli)
 	server := fake_release(t, "9.9.9", []byte(fake_claude))
@@ -448,12 +449,12 @@ func TestLegacyCredentialBootstrap(t *testing.T) {
 		it := find_item(must_items(t, cfg), devc.DisplayName(lf))
 		return it != nil && it.Status == StatusReady
 	})
-	out, code, err := dockerx.ExecOutput(t.Context(), cli, legacy_ctr, "", []string{
-		"cat", "/root/.cld/claude/.credentials.json",
+	// cld's config dir must not carry the legacy credentials: no bootstrap copy.
+	_, code, err := dockerx.ExecOutput(t.Context(), cli, legacy_ctr, "", []string{
+		"test", "-e", "/root/.cld/claude/.credentials.json",
 	})
 	require.NoError(t, err)
-	require.Equal(t, 0, code)
-	require.Contains(t, out, "legacy-cred")
+	require.NotEqual(t, 0, code, "legacy ~/.claude credentials must not be bootstrapped")
 }
 
 // start_daemon builds a daemon on cfg and runs it until the returned stop is

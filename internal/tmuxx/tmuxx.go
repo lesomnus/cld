@@ -63,6 +63,11 @@ func (s *Server) NewSession(ctx context.Context, name string, command string) er
 	return s.tune(ctx)
 }
 
+// The environment variable each session sets to the command its split and
+// new-window keys should run — a shell inside that session's container. See
+// bindSplitKeys and SetSplitCommand.
+const splitEnv = "CLD_EXEC"
+
 // tune sets server/global options that make the claude TUI render well:
 // synchronized output so redraws reach the outer terminal as atomic frames
 // (no tearing over SSH), and mouse reporting for fullscreen-mode scrolling.
@@ -70,6 +75,10 @@ func (s *Server) NewSession(ctx context.Context, name string, command string) er
 func (s *Server) tune(ctx context.Context) error {
 	if out, err := s.run(ctx, "set-option", "-g", "mouse", "on"); err != nil {
 		return fmt.Errorf("tmux set mouse: %w: %s", err, out)
+	}
+
+	if err := s.bindSplitKeys(ctx); err != nil {
+		return err
 	}
 
 	// Append the "sync" (DECSET 2026) feature once; appending on every session
@@ -80,6 +89,44 @@ func (s *Server) tune(ctx context.Context) error {
 	}
 	if out, err := s.run(ctx, "set-option", "-sa", "terminal-features", ",xterm*:sync"); err != nil {
 		return fmt.Errorf("tmux set terminal-features: %w: %s", err, out)
+	}
+	return nil
+}
+
+// bindSplitKeys rebinds the split and new-window keys so opening another pane
+// or window drops the user straight into a shell inside the session's
+// container, instead of a host shell on the tmux server.
+//
+// The bindings are server-global (bind-key has no per-session scope) and
+// identical for every session; the per-session part is the CLD_EXEC session
+// environment variable, which SetSplitCommand sets to that session's own
+// container-exec command. tmux does NOT expand #{format} strings in a
+// split-window command argument, but a new pane does inherit its session's
+// environment, so `sh -c "$CLD_EXEC"` resolves to the right container at
+// key-press time. Installed once (idempotent) from tune.
+func (s *Server) bindSplitKeys(ctx context.Context) error {
+	run := "exec sh -c \"$" + splitEnv + "\""
+	binds := [][]string{
+		{"%", "split-window", "-h", run},
+		{"\"", "split-window", "-v", run},
+		{"c", "new-window", run},
+	}
+	for _, b := range binds {
+		argv := append([]string{"bind-key", b[0]}, b[1:]...)
+		if out, err := s.run(ctx, argv...); err != nil {
+			return fmt.Errorf("tmux bind-key %s: %w: %s", b[0], err, out)
+		}
+	}
+	return nil
+}
+
+// SetSplitCommand records, in the session's environment, the command its split
+// and new-window keys run (see bindSplitKeys). command is a shell command line
+// that opens a shell inside the session's container.
+func (s *Server) SetSplitCommand(ctx context.Context, name, command string) error {
+	out, err := s.run(ctx, "set-environment", "-t", "="+name, splitEnv, command)
+	if err != nil {
+		return fmt.Errorf("tmux set-environment %s: %w: %s", splitEnv, err, out)
 	}
 	return nil
 }

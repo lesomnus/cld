@@ -1,87 +1,50 @@
 package daemon
 
 import (
-	"io"
-	"io/fs"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 
-	"github.com/lesomnus/cld/cmd/config"
 	"github.com/stretchr/testify/require"
 )
 
-func newAuthDaemon(t *testing.T) (*Daemon, string) {
-	t.Helper()
-	dir := t.TempDir()
-	d := &Daemon{
-		cfg: &config.Config{DataDir: dir},
-		log: slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}
-	return d, dir
-}
+func TestHandleSetCredentials(t *testing.T) {
+	const login = `{"claudeAiOauth":{"accessToken":"a","refreshToken":"r","expiresAt":0}}`
 
-func TestHandleSetToken(t *testing.T) {
-	t.Run("stores a token from the body with mode 0600", func(t *testing.T) {
-		d, _ := newAuthDaemon(t)
+	t.Run("stores a broker login from the body", func(t *testing.T) {
+		d, _ := newTestDaemon(t)
 		rr := httptest.NewRecorder()
-		d.handle_set_token(rr, httptest.NewRequest(http.MethodPost, "/auth/token",
-			strings.NewReader("sk-ant-oat01-abc\n"))) // trailing newline trimmed
+		d.handle_set_credentials(rr, httptest.NewRequest(http.MethodPost, "/auth/credentials",
+			strings.NewReader(login)))
 		require.Equal(t, http.StatusNoContent, rr.Code)
-
-		p := d.cfg.OAuthTokenStorePath()
-		b, err := os.ReadFile(p)
-		require.NoError(t, err)
-		require.Equal(t, "sk-ant-oat01-abc", string(b))
-
-		info, err := os.Stat(p)
-		require.NoError(t, err)
-		require.Equal(t, fs.FileMode(0o600), info.Mode().Perm())
+		require.True(t, d.broker.HasCredentials())
 	})
 
-	t.Run("rejects an empty token", func(t *testing.T) {
-		d, dir := newAuthDaemon(t)
+	t.Run("rejects a body without a claudeAiOauth object", func(t *testing.T) {
+		d, _ := newTestDaemon(t)
 		rr := httptest.NewRecorder()
-		d.handle_set_token(rr, httptest.NewRequest(http.MethodPost, "/auth/token",
-			strings.NewReader("   \n")))
+		d.handle_set_credentials(rr, httptest.NewRequest(http.MethodPost, "/auth/credentials",
+			strings.NewReader(`{}`)))
 		require.Equal(t, http.StatusBadRequest, rr.Code)
-		_, err := os.Stat(dir + "/oauth-token")
-		require.ErrorIs(t, err, fs.ErrNotExist) // nothing written
+		require.False(t, d.broker.HasCredentials())
 	})
 
-	t.Run("rejects a token with embedded whitespace", func(t *testing.T) {
-		d, _ := newAuthDaemon(t)
+	t.Run("rejects a login without a refresh token", func(t *testing.T) {
+		d, _ := newTestDaemon(t)
 		rr := httptest.NewRecorder()
-		d.handle_set_token(rr, httptest.NewRequest(http.MethodPost, "/auth/token",
-			strings.NewReader("tok en")))
+		d.handle_set_credentials(rr, httptest.NewRequest(http.MethodPost, "/auth/credentials",
+			strings.NewReader(`{"claudeAiOauth":{"accessToken":"a"}}`)))
 		require.Equal(t, http.StatusBadRequest, rr.Code)
 	})
 
 	t.Run("reachable through the in-container scoped relay", func(t *testing.T) {
-		d, _ := newAuthDaemon(t)
+		d, _ := newTestDaemon(t)
 		d.entries = map[string]*entry{}
 		h := d.scoped_api("idA")
 		rr := httptest.NewRecorder()
-		h.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/auth/token",
-			strings.NewReader("sk-ant-oat01-xyz")))
+		h.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/auth/credentials", strings.NewReader(login)))
 		require.Equal(t, http.StatusNoContent, rr.Code)
-		b, err := os.ReadFile(d.cfg.OAuthTokenStorePath())
-		require.NoError(t, err)
-		require.Equal(t, "sk-ant-oat01-xyz", string(b))
+		require.True(t, d.broker.HasCredentials())
 	})
-}
-
-func TestOAuthTokenFilePrecedence(t *testing.T) {
-	d, _ := newAuthDaemon(t)
-	d.cfg.Auth.OAuthTokenFile = "/configured/path"
-
-	// With no stored token, the configured path is used.
-	require.Equal(t, "/configured/path", d.oauth_token_file())
-
-	// A token set via the API takes precedence over the configured path.
-	require.NoError(t, os.WriteFile(d.cfg.OAuthTokenStorePath(), []byte("sk-ant-oat01-abc"), 0o600))
-	require.Equal(t, d.cfg.OAuthTokenStorePath(), d.oauth_token_file())
 }

@@ -94,6 +94,9 @@ func TestClassify(t *testing.T) {
 	t.Run("settings state", func(t *testing.T) {
 		require.Equal(t, claude.BackupSettings, claude.Classify(".claude.json"))
 		require.Equal(t, claude.BackupSettings, claude.Classify("settings.json"))
+		// Credentials are persisted per project (the backup is isolated, one live
+		// container per project), so a recreated container resumes the login.
+		require.Equal(t, claude.BackupSettings, claude.Classify(".credentials.json"))
 		require.Equal(t, claude.BackupSettings, claude.Classify("agents/foo.md"))
 		require.Equal(t, claude.BackupSettings, claude.Classify("CLAUDE.md"))
 		require.Equal(t, claude.BackupSettings, claude.Classify("skills/x/SKILL.md"))
@@ -112,9 +115,6 @@ func TestClassify(t *testing.T) {
 		// shared global backup, else completed sessions from one devcontainer
 		// surface in another's FleetView.
 		require.Equal(t, claude.BackupSkip, claude.Classify("jobs/85f00019/state.json"))
-		// Credentials are per-container now (auth is injected as an env token);
-		// sharing the rotating OAuth session across containers breaks refresh.
-		require.Equal(t, claude.BackupSkip, claude.Classify(".credentials.json"))
 		require.Equal(t, claude.BackupSkip, claude.Classify("tasks/abc/1.json"))
 		require.Equal(t, claude.BackupSkip, claude.Classify("backups/x"))
 		require.Equal(t, claude.BackupSkip, claude.Classify("history.jsonl"))

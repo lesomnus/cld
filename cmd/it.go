@@ -26,6 +26,8 @@ func NewCmdIt() *xli.Command {
 		Brief: "attach to the claude session of a devcontainer",
 		Flags: flg.Flags{
 			&flg.Switch{Name: "new", Brief: "recreate the session if the user had ended it"},
+			&flg.Switch{Name: "proxy", Brief: "authenticate this project through the shared broker login (`cld auth login`) and remember it"},
+			&flg.Switch{Name: "no-proxy", Brief: "log in per container for this project (the default) and remember it"},
 		},
 		Args: arg.Args{
 			&arg.String{Name: "name", Brief: "devcontainer name (`cld ls`); default: the only one / this container's own", Optional: true, Handler: completeNames()},
@@ -48,9 +50,22 @@ func NewCmdIt() *xli.Command {
 				// the session name and daemon lookups all key off the same one.
 				name = t.Name
 			}
-			if v, _ := flg.Get[bool](cmd, "new"); v {
-				if err := daemon.RecreateSession(ctx, c.SocketPath(), name); err != nil {
+			proxyOn, _ := flg.Get[bool](cmd, "proxy")
+			noProxy, _ := flg.Get[bool](cmd, "no-proxy")
+			if proxyOn && noProxy {
+				return fmt.Errorf("--proxy and --no-proxy are mutually exclusive")
+			}
+			switch {
+			case proxyOn || noProxy:
+				// Recording the mode recreates the session so it takes effect now.
+				if err := daemon.SetProxyMode(ctx, c.SocketPath(), name, proxyOn); err != nil {
 					return err
+				}
+			default:
+				if v, _ := flg.Get[bool](cmd, "new"); v {
+					if err := daemon.RecreateSession(ctx, c.SocketPath(), name); err != nil {
+						return err
+					}
 				}
 			}
 

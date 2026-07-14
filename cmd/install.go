@@ -65,28 +65,22 @@ func NewCmdInstall() *xli.Command {
 			// session left unauthenticated simply prompts a login inside the
 			// container, and that token stays in that container.
 			if !auth_configured(c) {
-				fmt.Fprintln(cmd.ErrWriter, "cld: no login configured — run `cld auth login` to share one Claude "+
-					"subscription across sessions (optional; otherwise log in inside each container)")
+				fmt.Fprintln(cmd.ErrWriter, "cld: sessions log in per container by default (cld remembers each "+
+					"project's login). To instead share one Claude subscription across sessions, run "+
+					"`cld auth login`, then `cld up --proxy` / `cld it --proxy` on the projects that should use it.")
 			}
 			return nil
 		}),
 	}
 }
 
-// auth_configured reports whether the daemon already has a way to authenticate
-// sessions: a broker login (`cld auth login`), a stored token (`cld auth
-// set-token`), or a configured auth.oauth_token_file. When none is present,
-// install points the user at `cld auth login`.
+// auth_configured reports whether the daemon already has a broker login
+// (`cld auth login`) — the only cross-session auth cld stores. It is optional:
+// without it, sessions log in per container (and cld persists that login per
+// project). When absent, install points the user at `cld auth login`.
 func auth_configured(c *config.Config) bool {
-	if c.Auth.OAuthTokenFile != "" {
-		return true
-	}
-	for _, p := range []string{c.BrokerCredentialsPath(), c.OAuthTokenStorePath()} {
-		if _, err := os.Stat(p); err == nil {
-			return true
-		}
-	}
-	return false
+	_, err := os.Stat(c.BrokerCredentialsPath())
+	return err == nil
 }
 
 func short_id(id string) string {

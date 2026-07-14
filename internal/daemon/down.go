@@ -104,6 +104,9 @@ func (d *Daemon) remove_devcontainer(ctx context.Context, e *entry, purge bool) 
 				errs = append(errs, fmt.Errorf("remove backup %s: %w", dir, err))
 			}
 		}
+		// Drop the project's proxy-mode preference too, so a later same-named
+		// project starts from the default (per-container login).
+		d.proxy.clear(d.backup_key(e))
 	}
 
 	d.sessions.clear(e.id)

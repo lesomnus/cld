@@ -1,11 +1,12 @@
 // Package syncer copies Claude Code state between containers and host-side
 // backups. A backup is keyed by project (see Daemon.backup_key) and holds two
 // kinds of state: settings/ has the project-independent-looking files
-// (settings.json, .claude.json, CLAUDE.md, agents/, commands/, skills/,
-// output-styles/, plugins/) and projects/+file-history/ have the transcripts.
-// Both live under the SAME per-project dir, never a bucket shared across
-// projects, so a change made inside one project's container can never bleed
-// into another project's container on restore.
+// (settings.json, .claude.json, .credentials.json, CLAUDE.md, agents/,
+// commands/, skills/, output-styles/, plugins/) and projects/+file-history/
+// have the transcripts. Both live under the SAME per-project dir, never a bucket
+// shared across projects, so a change made inside one project's container can
+// never bleed into another project's container on restore — which is also why
+// persisting the rotating .credentials.json here is safe (see claude.Classify).
 package syncer
 
 import (

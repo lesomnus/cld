@@ -2,11 +2,9 @@ package cmd
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -40,9 +38,7 @@ func NewCmdX() *xli.Command {
 }
 
 func new_cmd_x_exec() *xli.Command {
-	// The daemon owns all session env policy and passes it via repeatable
-	// --env; secrets go through --oauth-token-file so the token never appears
-	// in the tmux command or `ps`.
+	// The daemon owns all session env policy and passes it via repeatable --env.
 	var envs []string
 	return &xli.Command{
 		Name:  "exec",
@@ -61,7 +57,6 @@ func new_cmd_x_exec() *xli.Command {
 					return nil
 				}),
 			},
-			&flg.String{Name: "oauth-token-file", Brief: "host file holding a Claude Code OAuth token"},
 			&flg.String{Name: "notify", Brief: "daemon socket to notify when the command exits"},
 			&flg.String{Name: "session-gen", Brief: "session generation token echoed back on notify"},
 		},
@@ -80,16 +75,6 @@ func new_cmd_x_exec() *xli.Command {
 			defer cli.Close()
 
 			env := append([]string{}, envs...)
-			if f, ok := flg.Find[string](cmd, "oauth-token-file"); ok && f != "" {
-				b, err := os.ReadFile(f)
-				if err != nil {
-					// Don't fail the session, but make the cause visible in
-					// the pane instead of an unexplained login prompt.
-					fmt.Fprintf(os.Stderr, "cld: cannot read oauth token file %q: %v\n", f, err)
-				} else if tok := strings.TrimSpace(string(b)); tok != "" {
-					env = append(env, "CLAUDE_CODE_OAUTH_TOKEN="+tok)
-				}
-			}
 
 			o := termx.ExecOptions{
 				Container: ctr,

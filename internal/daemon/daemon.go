@@ -115,6 +115,7 @@ type Daemon struct {
 	self     string // path of the cld executable, reused as pane client and watcher
 	self_ctr string // container ID when the daemon itself runs in one, else ""
 	sessions *sessionStore
+	proxy    *proxyStore    // per-project opt-in to broker-proxy auth (see proxyStore)
 	broker   *broker.Broker // central subscription-auth broker (see internal/broker)
 
 	base_ctx context.Context // long-lived; parents watcher/sync goroutines
@@ -149,6 +150,7 @@ func New(cfg *config.Config, cli *client.Client, log *slog.Logger) (*Daemon, err
 		log:      log,
 		self:     self,
 		sessions: &sessionStore{dir: filepath.Join(cfg.CacheDir, "sessions")},
+		proxy:    &proxyStore{dir: cfg.ProxyStateDir()},
 		broker:   broker.New(broker.FileStore{Path: cfg.BrokerCredentialsPath()}),
 		entries:  map[string]*entry{},
 	}, nil

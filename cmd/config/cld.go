@@ -34,15 +34,6 @@ func (d Duration) Std() time.Duration {
 }
 
 type AuthConfig struct {
-	// Path to a host file containing a Claude Code OAuth token (as produced by
-	// `claude setup-token`). When set, the token is injected as
-	// CLAUDE_CODE_OAUTH_TOKEN into each session so a fresh container needs no
-	// interactive login. The path (not the token) is all that appears in the
-	// tmux command; keep the file mode 0600. A token stored via
-	// `cld auth set-token` (under DataDir, see OAuthTokenStorePath) takes
-	// precedence over this static path when present.
-	OAuthTokenFile string `yaml:"oauth_token_file"`
-
 	// ForwardAgent relays the host ssh-agent into each session (SSH_AUTH_SOCK),
 	// so `git commit` can sign and `git push` over SSH works inside the
 	// container — like VS Code Dev Containers. Enabled by default; set false to
@@ -141,7 +132,7 @@ func (c *Config) evaluateCld() error {
 
 	// Expand a leading "~" so the documented defaults work when copied
 	// verbatim from cld.yaml into a config file.
-	for _, p := range []*string{&c.CacheDir, &c.DataDir, &c.Auth.OAuthTokenFile} {
+	for _, p := range []*string{&c.CacheDir, &c.DataDir} {
 		v, err := expandTilde(*p)
 		if err != nil {
 			return err
@@ -236,13 +227,12 @@ func (c *Config) ProjectBackupDir(key string) string {
 	return filepath.Join(c.DataDir, "projects", key)
 }
 
-// OAuthTokenStorePath is where `cld auth set-token` persists the OAuth token the
-// daemon injects into sessions. It lives under DataDir — not the config file — so
-// a container can set it over the control API without editing config, and so the
-// token value never appears in cld.yaml. The daemon prefers it over
-// Auth.OAuthTokenFile when the file exists. Keep it mode 0600.
-func (c *Config) OAuthTokenStorePath() string {
-	return filepath.Join(c.DataDir, "oauth-token")
+// ProxyStateDir holds the per-project proxy-mode preferences (see
+// daemon.proxyStore): a marker file per project that opted into authenticating
+// through the broker proxy via `cld up --proxy` / `cld it --proxy`. It lives
+// under DataDir so the choice survives daemon and container restarts.
+func (c *Config) ProxyStateDir() string {
+	return filepath.Join(c.DataDir, "proxy")
 }
 
 // BrokerCredentialsPath is where the auth broker persists the single `/login`

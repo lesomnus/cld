@@ -157,8 +157,9 @@ Things that just work — nothing for you to do:
   from the host backup and resumed. History follows the `name` in your
   devcontainer.json, so it even survives moving the project directory.
 - **First time in a brand-new project?** Onboarding and the workspace-trust
-  prompt are pre-answered. Login happens once ever: either interactively on
-  your first attach, or never — if `auth.oauth_token_file` is configured.
+  prompt are pre-answered. You log in once per project — complete the login on
+  your first attach and cld persists it to the project's backup, so every later
+  recreate restores it and skips the prompt.
 
 One caution: everything keys off the `name` field in devcontainer.json. Give
 each project a distinct name — two projects sharing a name share a
@@ -284,15 +285,21 @@ $ source <(cld completion zsh)   # or add this line to ~/.zshrc
 
 All settings are optional; see `cld.yaml` for the full list with defaults.
 
-To drop the `~/.claude` bind mount from your devcontainers entirely, run
-`cld auth login`: the daemon takes ownership of one Claude-subscription login,
-refreshes it centrally, and shares it across sessions through a proxy — no
-refresh token ever enters a container, and a running session picks up rotated
-tokens without restarting. Your host's own `~/.claude` is left untouched.
-Alternatively point `auth.oauth_token_file` at a `claude setup-token` token (or
-use `cld auth set-token`); cld injects it as `CLAUDE_CODE_OAUTH_TOKEN`. With
-neither, a fresh container simply prompts a login inside itself. See
-`docs/claude-config-layout.md` for how the three tiers relate.
+By default each container logs in for itself and cld persists that login to the
+project's isolated backup, restoring it on every recreate — so you log in once
+per project, no `~/.claude` bind mount required, and because the backup is
+per-project one container's rotating token never clobbers another's.
+
+To instead share ONE Claude-subscription login across sessions, run `cld auth
+login` — the daemon takes ownership of the login and refreshes it centrally —
+then opt the projects that should use it in with `cld up --proxy` (or `cld it
+--proxy`). Those sessions authenticate through the daemon's proxy: no refresh
+token ever enters a container, and a running session picks up rotated tokens
+without restarting. Your host's own `~/.claude` is left untouched. The proxy is
+opt-in because it points `ANTHROPIC_BASE_URL` at a non-first-party endpoint,
+which makes Claude Code degrade its UI and disable some features; `--proxy` /
+`--no-proxy` are remembered per project. See `docs/claude-config-layout.md` for
+how the config tiers relate.
 
 cld's own user-default Claude Code config (settings, `CLAUDE.md`, commands,
 agents, output styles — see "Your claude config comes with you" above) is

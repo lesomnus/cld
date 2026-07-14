@@ -93,12 +93,13 @@ docker event를 listen해서 devcontainer가 뜨면, 호스트에 캐시해둔 c
   - 세션에 `CLAUDE_CONFIG_DIR=<home>/.claude`를 설정하므로 시드 위치는 `<home>/.claude/.claude.json` (기본값인 `$HOME/.claude.json`이 아님 — 아래 "대화 기록 지속" 참고).
   - 기존 파일이 있으면 덮어쓰지 않고 JSON 병합(필요한 키만 추가). 파일 소유자는 remoteUser.
   - `settings.json`에는 `cleanupPeriodDays: 365`를 시드 (기본 30일, mtime 기준 시작 시 삭제 — 복원된 옛 대화가 지워지는 것 방지).
-- 로그인(자격증명)은 시드로 해결되지 않는다. **최초 1회만** 사용자가 첫 `cld it`에서 로그인하면 `.credentials.json`이 global 백업으로 복사-아웃되고, 이후 모든 컨테이너·프로젝트에 복원된다(아래 "대화 기록 지속"). `~/.claude`를 마운트하는 기존 구성에서도 동작하지만, cld가 자리잡으면 마운트는 없앨 예정. 추후 옵션: `claude setup-token`으로 만든 `CLAUDE_CODE_OAUTH_TOKEN`을 세션 환경에 주입.
+- 로그인(자격증명)은 시드로 해결되지 않는다. 기본값은 **프로젝트별 1회 로그인**: 사용자가 첫 `cld it`에서 로그인하면 `.credentials.json`이 그 프로젝트의 **격리된 per-project 백업**으로 복사-아웃되고(전역 공유 아님), 이후 같은 프로젝트의 컨테이너를 재생성할 때 복원된다(아래 "대화 기록 지속"). 백업이 프로젝트별로 격리되어 있고 프로젝트당 라이브 컨테이너는 보통 하나뿐이라, 한 컨테이너의 회전하는 refresh 토큰이 다른 컨테이너를 무효화하는 충돌이 없다.
+- 하나의 Claude 구독 로그인을 여러 세션이 공유하려면 `cld auth login`(데몬이 로그인을 소유·중앙 갱신)으로 브로커를 설정한 뒤, 공유를 원하는 프로젝트에서 `cld up --proxy` / `cld it --proxy`로 **명시적으로 opt-in**한다. 해당 세션은 데몬의 리버스 프록시(`ANTHROPIC_BASE_URL`)로 인증하며 refresh 토큰은 컨테이너에 절대 들어가지 않는다. 프록시는 non-first-party base URL이라 Claude Code의 UI/기능이 일부 제한되므로 기본 비활성 — `--no-proxy`로 프로젝트를 되돌린다. 선택은 프로젝트별로 기억된다(`Config.ProxyStateDir()`).
 
 ## config dir 격리 (구현됨)
 
 - 세션의 `CLAUDE_CONFIG_DIR`은 `<home>/.claude`가 **아니라 `<home>/.cld/claude`**(cld 전용). 사용자가 devcontainer에 `~/.claude`를 공유 마운트하고 모든 워크스페이스가 `/workspace`면 대화가 `projects/-workspace/` 한 바구니로 뭉치는데(경로 키가 동일), 전용 dir이면 cld의 프로젝트별 sync가 마운트와 무관하게 권위를 갖는다.
-- 기존 `~/.claude` 마운트 사용자를 위해: cld dir에 자격증명이 없고 백업도 없으면 컨테이너의 `~/.claude/.credentials.json`을 cld dir로 **1회 부트스트랩**(무로그인 유지). 이후는 global 백업이 진실.
+- (제거됨) 예전에는 cld dir에 자격증명·백업이 없으면 컨테이너의 `~/.claude/.credentials.json`을 1회 부트스트랩했으나, 공유 마운트에서 부트스트랩하면 여러 프로젝트가 같은 refresh 토큰을 회전시켜 충돌한다. 이제는 부트스트랩 없이 각 컨테이너가 스스로 로그인하고 그 로그인을 per-project 백업이 보존한다.
 - `bind_mounted` 특별처리(마운트면 sync 안 함)는 제거 — 이제 cld dir이 마운트 대상이 아니므로 항상 sync가 권위.
 
 ## 로케일 (구현됨)
@@ -188,9 +189,9 @@ compose에서 워크스페이스 컨테이너만 나오는 건 라벨 필터로 
 
 ## 인증과 마운트 제거 (구현됨)
 
-- `auth.oauth_token_file`(config)에 `claude setup-token`으로 만든 토큰 파일 경로를 넣으면, cld가 세션마다 `CLAUDE_CODE_OAUTH_TOKEN`을 주입한다. 토큰은 파일에서 읽어 컨테이너 exec env로만 전달 — tmux 명령이나 `ps`에는 파일 경로만 노출된다(파일은 0600 권장).
-- 이걸로 **`~/.claude` bind mount 없이도 새 컨테이너가 무인 인증**된다. 백업의 global(`credentials`)이 복원되므로 두 번째 컨테이너부터는 토큰 없이도 되고, 첫 컨테이너는 토큰으로 커버된다.
-- 이 저장소 자신의 dev 컨테이너(`.devcontainer/docker-compose.yaml`)는 개발 편의상 `~/.claude` 마운트를 그대로 둔다(cld가 이 컨테이너를 관리하지 않으므로). cld가 관리하는 다른 devcontainer들에서는 `oauth_token_file` 설정 후 마운트를 빼면 된다.
+- (제거됨) 예전 `auth.oauth_token_file` / `cld auth set-token`으로 `CLAUDE_CODE_OAUTH_TOKEN`을 세션에 주입하던 경로는 삭제됐다. 프록시 모드가 아닌 세션은 이제 토큰을 주입받지 않고 컨테이너가 스스로 로그인한다.
+- **`~/.claude` bind mount 없이도** 재로그인 부담이 없다: 각 컨테이너가 스스로 로그인하고 그 `.credentials.json`을 per-project 백업이 보존·복원하므로, 같은 프로젝트를 재생성해도 로그인은 프로젝트당 1회면 된다. 여러 세션이 한 구독을 공유하려면 `cld auth login` 후 프로젝트별로 `--proxy`를 켠다(위 "인증과 첫 실행" 참고).
+- 이 저장소 자신의 dev 컨테이너(`.devcontainer/docker-compose.yaml`)는 개발 편의상 `~/.claude` 마운트를 그대로 둔다(cld가 이 컨테이너를 관리하지 않으므로).
 
 ## 세션 수명 (구현됨)
 

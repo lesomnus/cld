@@ -69,11 +69,13 @@ func Slug(name string) string {
 	return strings.Trim(b.String(), "-.")
 }
 
-// SessionName is the tmux session name for a display name.
+// SessionName is the tmux session name for a display name. The name is used
+// as-is (no "cld-" prefix): the tmux server runs on its own dedicated socket,
+// so session names never collide with the user's own tmux sessions.
 // "." and ":" collide with tmux target syntax so they are replaced.
 func SessionName(name string) string {
 	r := strings.NewReplacer(".", "_", ":", "_")
-	return "cld-" + r.Replace(name)
+	return r.Replace(name)
 }
 
 // aliasShort is the length at or below which a name is already terse enough to

@@ -42,22 +42,23 @@ const (
 //     skips onboarding and keeps the user's model/permissions/hooks.
 //   - CLAUDE.md and agents/commands/skills/output-styles/plugins: user-level
 //     customizations meant to apply everywhere, not per project.
-//
-// Note .credentials.json is deliberately NOT here. It holds a claude.ai OAuth
-// session whose refresh token rotates: sharing one file across live containers
-// makes each container's refresh invalidate the others', forcing repeated
-// browser logins. Auth is instead injected per session as CLAUDE_CODE_OAUTH_TOKEN
-// from a long-lived token (see `cld auth set-token` / auth.oauth_token_file),
-// which no container refreshes, so there is nothing to rotate or clobber.
+//   - .credentials.json: the claude.ai OAuth session from the per-container
+//     login. Its refresh token rotates, so this must NOT be shared across live
+//     containers — but a project backup is isolated (one live container per
+//     project; see syncer.Layout), so persisting it here lets a recreated
+//     container resume the same login instead of prompting a fresh one. Restore
+//     only ever runs into a container with no state of its own, so a live
+//     container's rotating token is never clobbered by an older backup.
 var settings_entries = map[string]bool{
-	".claude.json":  true,
-	"settings.json": true,
-	"CLAUDE.md":     true,
-	"agents":        true,
-	"commands":      true,
-	"skills":        true,
-	"output-styles": true,
-	"plugins":       true,
+	".claude.json":      true,
+	".credentials.json": true,
+	"settings.json":     true,
+	"CLAUDE.md":         true,
+	"agents":            true,
+	"commands":          true,
+	"skills":            true,
+	"output-styles":     true,
+	"plugins":           true,
 }
 
 // Classify classifies a path relative to the config dir into transcript state

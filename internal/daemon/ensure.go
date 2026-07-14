@@ -526,10 +526,6 @@ func (d *Daemon) prepare_state(ctx context.Context, e *entry, id string) error {
 		e.restored = true
 	}
 
-	if err := d.bootstrap_credentials(ctx, e, id); err != nil {
-		return fmt.Errorf("bootstrap credentials: %w", err)
-	}
-
 	if err := d.install_gitconfig(ctx, e, id); err != nil {
 		return fmt.Errorf("install gitconfig: %w", err)
 	}
@@ -569,44 +565,6 @@ func (d *Daemon) prepare_state(ctx context.Context, e *entry, id string) error {
 		return fmt.Errorf("chown config dir: exit %d: %s", code, out)
 	}
 	return nil
-}
-
-// bootstrap_credentials copies credentials from the container's default
-// ~/.claude (typically a user's legacy bind mount) into cld's config dir when
-// the latter has none — so existing setups keep working with zero logins
-// while cld's dir stays authoritative for everything else.
-func (d *Daemon) bootstrap_credentials(ctx context.Context, e *entry, id string) error {
-	dst := path.Join(e.cfg_dir, ".credentials.json")
-	if _, ok, err := dockerx.ReadFile(ctx, d.cli, id, dst); err != nil || ok {
-		return err
-	}
-
-	legacy := path.Join(claude.LegacyConfigDirIn(e.home), ".credentials.json")
-	data, ok, err := dockerx.ReadFile(ctx, d.cli, id, legacy)
-	if err != nil || !ok {
-		return err
-	}
-
-	if err := dockerx.WriteFile(ctx, d.cli, id, e.cfg_dir, ".credentials.json", 0o600, e.uid, e.gid, data); err != nil {
-		return err
-	}
-	d.log.Info("credentials bootstrapped from ~/.claude",
-		slog.String("id", short(id)), slog.String("name", e.item.Name))
-	return nil
-}
-
-// oauth_token_file resolves the host file whose OAuth token is injected into
-// sessions as CLAUDE_CODE_OAUTH_TOKEN. A token set via `cld auth set-token`
-// (stored under DataDir) takes precedence over the statically configured
-// auth.oauth_token_file, so a container-side login wins over stale config.
-// Returns "" when neither is present, leaving the session to its own credentials.
-func (d *Daemon) oauth_token_file() string {
-	if p := d.cfg.OAuthTokenStorePath(); p != "" {
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	return d.cfg.Auth.OAuthTokenFile
 }
 
 // seed_file reads a config-dir file, applies seed, and writes it back only if
@@ -684,13 +642,6 @@ func (d *Daemon) ensure_session(ctx context.Context, e *entry, id string) error 
 	for _, kv := range d.session_env(e) {
 		argv = append(argv, "--env", kv)
 	}
-	// A broker session gets its auth through the proxy (ANTHROPIC_BASE_URL, set in
-	// session_env), so it must NOT also receive a CLAUDE_CODE_OAUTH_TOKEN.
-	if !d.broker_session(e) {
-		if f := d.oauth_token_file(); f != "" {
-			argv = append(argv, "--oauth-token-file", f)
-		}
-	}
 	argv = append(argv,
 		"--notify", d.cfg.SocketPath(),
 		"--session-gen", e.started_at,
@@ -703,6 +654,14 @@ func (d *Daemon) ensure_session(ctx context.Context, e *entry, id string) error 
 	}
 
 	if err := d.tmux.NewSession(ctx, name, command); err != nil {
+		return err
+	}
+	// Bind the session's split/new-window keys to a shell inside this same
+	// container, so an extra pane lands in the container, not the host tmux
+	// server. Same exec plumbing as the claude pane, minus the --notify/
+	// --session-gen wiring (an ad-hoc shell exiting must not end the session)
+	// and running a login shell instead of claude.
+	if err := d.tmux.SetSplitCommand(ctx, name, d.split_command(e, id)); err != nil {
 		return err
 	}
 	// Record that a live session now exists for this generation.
@@ -727,6 +686,32 @@ func session_command(has_history bool) []string {
 		return []string{"sh", "-c", "claude --continue || exec claude"}
 	}
 	return []string{"claude"}
+}
+
+// split_command is the shell command line bound to a session's split and
+// new-window keys: the same exec-attach client the claude pane runs, pointed
+// at a login shell instead of claude. It carries the session env so an extra
+// pane matches claude's environment, but omits --notify/--session-gen so the
+// shell exiting is never mistaken for the user ending the session.
+func (d *Daemon) split_command(e *entry, id string) string {
+	argv := []string{
+		d.self, "x", "exec",
+		"--user", e.user,
+		"--workdir", e.item.Workspace,
+	}
+	for _, kv := range d.session_env(e) {
+		argv = append(argv, "--env", kv)
+	}
+	argv = append(argv, id, "--")
+	// Prefer the user's login shell, then bash, then sh — devcontainer images
+	// vary. exec so the shell owns the pane and its exit closes the pane.
+	argv = append(argv, "sh", "-c", "exec ${SHELL:-bash} 2>/dev/null || exec sh")
+
+	command := tmuxx.QuoteAll(argv)
+	if h := os.Getenv("DOCKER_HOST"); h != "" {
+		command = "DOCKER_HOST=" + tmuxx.Quote(h) + " " + command
+	}
+	return command
 }
 
 // session_env is the environment injected into every claude session. The

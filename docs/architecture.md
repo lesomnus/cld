@@ -26,8 +26,10 @@ Key paths (`CacheDir` defaults to `$XDG_CACHE_HOME/cld`, i.e. `~/.cache/cld`;
   daemon (ssh-agent, gitconfig)
 - `<DataDir>/user-default/` — cld's own user-default Claude Code config (see
   `docs/claude-config-layout.md`); not staged from the host, edited directly
-- `<DataDir>/oauth-token`, `<DataDir>/projects/<key>/` — the injected OAuth
-  token and each project's isolated backup
+- `<DataDir>/broker-credentials.json`, `<DataDir>/proxy/<key>`,
+  `<DataDir>/projects/<key>/` — the opt-in broker login, per-project proxy-mode
+  preferences, and each project's isolated backup (which also holds that
+  project's persisted `.credentials.json`)
 
 ## Topology
 
@@ -64,9 +66,10 @@ running, non-ignored devcontainer it, in order:
    dir (`~/.cld/claude`), workspace folder, and platform.
 2. **install binaries** — copy `claude-<version>` and the `cld` binary into
    `/usr/local/bin` (atomic symlink swap; checksum-verified).
-3. **prepare state** — restore the project backup, bootstrap credentials, install
-   the host gitconfig and your shared Claude Code config (settings/memory/commands/
-   agents/output-styles), seed onboarding/trust keys, and finally `chown -R` the
+3. **prepare state** — restore the project backup (including that project's
+   persisted `.credentials.json`), install the host gitconfig and your shared
+   Claude Code config (settings/memory/commands/agents/output-styles), seed
+   onboarding/trust keys, and finally `chown -R` the
    config dir to the container user (docker cp leaves synthesized parent dirs
    root-owned, which would block a new conversation's transcript write).
 4. **create the session** — a host tmux session whose pane runs
@@ -96,6 +99,34 @@ A pane's exit status is reported back to the daemon (`cld x exec` →
 `POST /notify/exited?code=…`). A clean exit (0) becomes `session-ended`; a
 non-zero exit becomes `failed` and stays visible, so a crash is diagnosable
 rather than looking like a normal quit.
+
+### Extra panes open a container shell
+
+The tmux server runs on the *host*, so a plain `prefix-%` would split into a
+host shell — one level out from where you want to be. `cld` rebinds the split
+and new-window keys so an extra pane instead drops you straight into a shell
+inside that session's container:
+
+| key            | opens                                       |
+| -------------- | ------------------------------------------- |
+| `prefix + %`   | container shell, split right                |
+| `prefix + "`   | container shell, split down                 |
+| `prefix + c`   | container shell in a new window             |
+
+The shell is the same `cld x exec` attach the claude pane uses, pointed at a
+login shell (`${SHELL:-bash}`, falling back to `sh`) instead of `claude`, and
+carrying the same session environment (`session_env`). It omits
+`--notify`/`--session-gen`, so closing an ad-hoc shell never ends the claude
+session.
+
+One tmux server is shared by every session, but `bind-key` is server-global and
+has no per-session scope — and tmux does **not** expand `#{format}` strings in a
+split-window command argument. So the bindings are identical for all sessions
+and defer the container to a session environment variable, `CLD_EXEC`, which
+`ensure_session` sets per session (`SetSplitCommand`) to that session's own
+`cld x exec … -- sh -c 'exec ${SHELL:-bash} …'`. A new pane inherits its
+session's environment, so `sh -c "$CLD_EXEC"` resolves to the right container at
+key-press time (`internal/tmuxx.bindSplitKeys`).
 
 ## Attaching from your terminal
 

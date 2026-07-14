@@ -26,6 +26,8 @@ func NewCmdUp() *xli.Command {
 		Brief: "create/start a devcontainer and attach to its claude session",
 		Flags: flg.Flags{
 			&flg.Switch{Name: "no-attach", Brief: "provision only; do not attach"},
+			&flg.Switch{Name: "proxy", Brief: "authenticate this project through the shared broker login (`cld auth login`) and remember it"},
+			&flg.Switch{Name: "no-proxy", Brief: "log in per container for this project (the default) and remember it"},
 		},
 		Args: arg.Args{
 			&arg.String{Name: "path", Brief: "project folder (default: current directory)", Optional: true},
@@ -33,6 +35,12 @@ func NewCmdUp() *xli.Command {
 		},
 		Handler: xli.OnRun(func(ctx context.Context, cmd *xli.Command, next xli.Next) error {
 			c := use_config.Must(ctx)
+
+			proxyOn, _ := flg.Get[bool](cmd, "proxy")
+			noProxy, _ := flg.Get[bool](cmd, "no-proxy")
+			if proxyOn && noProxy {
+				return fmt.Errorf("--proxy and --no-proxy are mutually exclusive")
+			}
 
 			path := "."
 			arg.VisitP(cmd, "path", &path)
@@ -90,14 +98,24 @@ func NewCmdUp() *xli.Command {
 				return err
 			}
 
+			// Record (and apply) a proxy-mode change for this project if asked.
+			// Absent the flags, a previously-remembered mode still governs the
+			// session the daemon already created — nothing to do here.
+			if item != nil && (proxyOn || noProxy) {
+				if err := daemon.SetProxyMode(ctx, c.SocketPath(), item.Name, proxyOn); err != nil {
+					return err
+				}
+			}
+
 			if v, _ := flg.Get[bool](cmd, "no-attach"); v || item == nil {
 				return nil
 			}
 
 			// `up` means "bring it up and drop me in", so if the user had
 			// ended the session earlier the daemon won't have recreated it —
-			// recreate now so there is a session to attach to.
-			if item.Status == daemon.StatusSessionEnded {
+			// recreate now so there is a session to attach to. SetProxyMode above
+			// already recreated it when a proxy flag was given, so skip then.
+			if !proxyOn && !noProxy && item.Status == daemon.StatusSessionEnded {
 				if err := daemon.RecreateSession(ctx, c.SocketPath(), item.Name); err != nil {
 					return err
 				}

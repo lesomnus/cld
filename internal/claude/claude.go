@@ -22,12 +22,6 @@ func ConfigDirIn(home string) string {
 	return home + "/.cld/claude"
 }
 
-// LegacyConfigDirIn is claude's default config dir; used only to bootstrap
-// credentials from a user's existing bind-mounted ~/.claude.
-func LegacyConfigDirIn(home string) string {
-	return home + "/.claude"
-}
-
 // maxEncodedLen mirrors Claude Code's length threshold: an encoded path longer
 // than this is truncated and disambiguated with a hash of the original path.
 const maxEncodedLen = 200
@@ -147,7 +141,8 @@ func StripProjectState(data []byte) ([]byte, bool) {
 //   - env holds arbitrary environment, a common home for API keys/tokens.
 //   - apiKeyHelper/awsCredentialExport/awsAuthRefresh/otelHeadersHelper run host
 //     binaries that do not exist in the container (like the gitconfig
-//     credential.helper); auth comes from cld's token / bootstrapped credentials.
+//     credential.helper); auth comes instead from a per-container login (whose
+//     credentials cld persists per project) or the opt-in broker proxy.
 //   - enableAllProjectMcpServers/enabledMcpjsonServers auto-trust a repo's own
 //     MCP servers; that trust should be re-decided in the sandbox, not inherited.
 var unsafeUserSettingsKeys = []string{

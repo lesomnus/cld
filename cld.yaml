@@ -13,18 +13,20 @@
 #  - ~/work/vendor/**
 
 auth:
-  # To share one Claude subscription across sessions, prefer `cld auth login`:
-  # the daemon owns and centrally refreshes a single login, and sessions
-  # authenticate through its proxy with only short-lived access tokens (no
-  # refresh token ever enters a container). Nothing for it is configured here.
+  # By default each container logs in for itself: run `claude` inside it and
+  # complete the login once. cld persists that login (.credentials.json) to the
+  # project's isolated backup and restores it whenever the container is
+  # recreated, so you log in only once per project — and, because the backup is
+  # per-project, one container's rotating token never clobbers another's.
   #
-  # The setting below is the simpler long-lived-token fallback. Path to a host
-  # file holding a Claude Code OAuth token (from `claude setup-token`). When set,
-  # the token is injected into each session so a fresh container needs no
-  # interactive login — this too lets you drop the "~/.claude" bind mount from
-  # your devcontainers. Keep it 0600; only the path (never the token) appears in
-  # the tmux command.
-  #oauth_token_file: ~/.config/cld/oauth-token
+  # To instead share ONE Claude subscription across sessions, run `cld auth
+  # login` (the daemon owns and centrally refreshes the login) and opt the
+  # projects that should use it in with `cld up --proxy` / `cld it --proxy`.
+  # Those sessions authenticate through the daemon's proxy with only short-lived
+  # access tokens (no refresh token ever enters a container). The proxy is
+  # opt-in because it points ANTHROPIC_BASE_URL at a non-first-party endpoint,
+  # which makes Claude Code degrade its UI and disable some features; switch a
+  # project back with `--no-proxy`. Neither path is configured here.
 
   # Relay the host ssh-agent into each session (SSH_AUTH_SOCK), so `git commit`
   # can sign and SSH pushes work inside the container — like VS Code Dev

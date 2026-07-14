@@ -241,11 +241,15 @@ func (d *Daemon) relay_api(ctx context.Context, e *entry, id string) {
 const proxyListenAddr = "127.0.0.1:49327"
 
 // broker_session reports whether this session should authenticate through the
-// broker's proxy rather than an injected CLAUDE_CODE_OAUTH_TOKEN. It needs both
-// an active broker (a login set via `cld auth login`) and the in-container relay
-// (arch match, so cld's own binary can run the proxy listener there).
+// broker's proxy rather than logging in per container. The proxy is opt-in per
+// project (see proxyStore): a session uses it only when the project explicitly
+// enabled it via `cld up --proxy` / `cld it --proxy`, AND a broker login exists
+// (`cld auth login`), AND the in-container relay can run (arch match, so cld's
+// own binary can serve the proxy listener there). Absent any of these the
+// session falls back to the default per-container login.
 func (d *Daemon) broker_session(e *entry) bool {
-	return e.arch_ok && d.cfg.Auth.RemoteControlEnabled() && d.broker.HasCredentials()
+	return e.arch_ok && d.cfg.Auth.RemoteControlEnabled() &&
+		d.proxy.get(d.backup_key(e)) && d.broker.HasCredentials()
 }
 
 // relay_proxy exposes the daemon's auth proxy inside the container: an
