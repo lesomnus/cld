@@ -5,17 +5,21 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"path"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/lesomnus/cld/internal/claude"
 	"github.com/lesomnus/cld/internal/devc"
+	"github.com/lesomnus/cld/internal/dockerx"
 	"github.com/lesomnus/cld/internal/syncer"
+	"github.com/lesomnus/cld/internal/tmuxx"
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/client"
 )
@@ -142,6 +146,46 @@ func (d *Daemon) copy_out(ctx context.Context, e *entry, p dirty) {
 		d.log.Warn("copy-out failed",
 			slog.String("name", e.item.Name), slog.String("error", err.Error()))
 	}
+
+	// A transcript change is the only thing that can move the conversation
+	// title, so re-read it here (still on the worker) and republish.
+	if p.transcript {
+		d.refresh_title(ctx, e)
+	}
+}
+
+// refresh_title reads claude's own conversation summary from the newest
+// transcript and caches it on the entry for listings. It runs on the entry's
+// worker (so writing e.item and publishing is race-free) and is best-effort:
+// any failure — no transcript yet, a claude version that stopped writing the
+// ai-title record, a docker hiccup — simply leaves the previous title in place.
+func (d *Daemon) refresh_title(ctx context.Context, e *entry) {
+	enc := claude.EncodeProjectPath(e.item.Workspace)
+	dir := path.Join(e.cfg_dir, "projects", enc)
+	// Take the last ai-title record of the most recently modified transcript.
+	// Anchoring the match at the start of the line skips assistant messages
+	// that merely quote the string "ai-title" in their body.
+	script := `f=$(ls -t ` + tmuxx.Quote(dir) + `/*.jsonl 2>/dev/null | head -1); ` +
+		`[ -n "$f" ] && grep '^{"type":"ai-title"' "$f" | tail -1`
+	out, _, err := dockerx.ExecOutput(ctx, d.cli, e.id, e.user, []string{"sh", "-c", script})
+	if err != nil {
+		return
+	}
+	line := strings.TrimSpace(out)
+	if line == "" {
+		return
+	}
+	var rec struct {
+		Title string `json:"aiTitle"`
+	}
+	if json.Unmarshal([]byte(line), &rec) != nil || rec.Title == "" {
+		return
+	}
+	if rec.Title == e.item.Title {
+		return
+	}
+	e.item.Title = rec.Title
+	e.publish()
 }
 
 // watch_container keeps an in-container watcher exec alive and feeds its

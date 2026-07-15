@@ -191,6 +191,9 @@ func (d *Daemon) ensure_(ctx context.Context, e *entry) error {
 	if e.item.Status == StatusProvisioning {
 		e.item.Status = StatusReady
 	}
+	// Seed the conversation title from any resumed transcript so a listing shows
+	// it immediately, without waiting for the first transcript change to sync.
+	d.refresh_title(ctx, e)
 	e.publish()
 	d.log.Info("ready",
 		slog.String("id", short(id)),

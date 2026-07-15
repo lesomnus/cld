@@ -131,6 +131,20 @@ func (s *Server) SetSplitCommand(ctx context.Context, name, command string) erro
 	return nil
 }
 
+// CapturePane returns the visible text of a session's active pane. A missing
+// session (or no running server) yields an empty string and no error, so
+// callers can treat "no pane" as simply "no signal" rather than a failure.
+func (s *Server) CapturePane(ctx context.Context, name string) (string, error) {
+	out, err := s.run(ctx, "capture-pane", "-p", "-t", "="+name)
+	if err != nil {
+		if _, ok := err.(*exec.ExitError); ok {
+			return "", nil
+		}
+		return "", err
+	}
+	return out, nil
+}
+
 func (s *Server) KillSession(ctx context.Context, name string) error {
 	out, err := s.run(ctx, "kill-session", "-t", "="+name)
 	if err != nil {

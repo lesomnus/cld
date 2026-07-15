@@ -88,7 +88,7 @@ func (d *Daemon) scoped_api(self_id string) http.Handler {
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"items": mine})
+		json.NewEncoder(w).Encode(map[string]any{"items": d.withActivity(r.Context(), mine)})
 	})
 	mux.HandleFunc("GET /session/attach", only_self(d.handle_attach))
 	mux.HandleFunc("POST /session/new", only_self(d.handle_session_new))
@@ -112,7 +112,7 @@ func (d *Daemon) scoped_api(self_id string) http.Handler {
 
 func (d *Daemon) handle_items(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"items": d.Items()})
+	json.NewEncoder(w).Encode(map[string]any{"items": d.withActivity(r.Context(), d.Items())})
 }
 
 func (d *Daemon) handle_info(w http.ResponseWriter, r *http.Request) {

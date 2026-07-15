@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -34,6 +35,21 @@ const (
 	StatusFailed       Status = "failed"
 )
 
+// Activity is what the claude conversation in a ready container is doing right
+// now — a separate axis from Status (the container lifecycle). It is derived
+// live from the session's tmux pane when listing, so it is empty for a
+// container that is not ready.
+type Activity string
+
+const (
+	// ActivityWorking: claude is generating (the pane shows its interrupt hint).
+	ActivityWorking Activity = "working"
+	// ActivityWaiting: claude has a conversation and is idle at the prompt.
+	ActivityWaiting Activity = "waiting"
+	// ActivityIdle: claude is up but no conversation has started yet.
+	ActivityIdle Activity = "idle"
+)
+
 // Item is the externally visible state of one provisioned devcontainer.
 type Item struct {
 	ID          string `json:"id"`
@@ -44,6 +60,12 @@ type Item struct {
 	Status      Status `json:"status"`
 	Version     string `json:"version"`
 	Error       string `json:"error,omitempty"`
+	// Activity is the live conversation state; only set for ready containers
+	// and filled in when listing (see withActivity), not by the worker.
+	Activity Activity `json:"activity,omitempty"`
+	// Title is claude's own summary of the conversation, cached from the
+	// transcript by the worker (see refresh_title).
+	Title string `json:"title,omitempty"`
 }
 
 // entry is one container's state. Every mutable field except the published
@@ -388,6 +410,42 @@ func (d *Daemon) Items() []Item {
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
 	return items
+}
+
+// withActivity fills the live conversation Activity of every ready item by
+// reading its tmux pane. It works off the published snapshots (Name, Status,
+// Title) — never entry-owned fields — so it is safe to call from a request
+// handler. A pane that cannot be read leaves the item classified as waiting
+// rather than failing the whole listing.
+func (d *Daemon) withActivity(ctx context.Context, items []Item) []Item {
+	for i := range items {
+		if items[i].Status != StatusReady {
+			continue
+		}
+		pane, _ := d.tmux.CapturePane(ctx, devc.SessionName(items[i].Name))
+		items[i].Activity = classifyActivity(pane, items[i].Title)
+	}
+	return items
+}
+
+// paneWorkingHint is the substring Claude Code's TUI shows in its footer while
+// it is generating ("esc to interrupt"). Matching the TUI is brittle across
+// claude versions, so a miss only misclassifies a working pane as waiting — it
+// never breaks the listing.
+const paneWorkingHint = "to interrupt"
+
+// classifyActivity turns a captured pane and the cached title into a
+// conversation Activity. A pane still showing the interrupt hint is working;
+// otherwise the container is idle when no conversation has produced a title yet
+// and waiting once it has.
+func classifyActivity(pane, title string) Activity {
+	if strings.Contains(pane, paneWorkingHint) {
+		return ActivityWorking
+	}
+	if title == "" {
+		return ActivityIdle
+	}
+	return ActivityWaiting
 }
 
 func short(id string) string {
