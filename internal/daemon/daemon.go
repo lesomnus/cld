@@ -67,6 +67,14 @@ type Item struct {
 	// Title is claude's own summary of the conversation, cached from the
 	// transcript by the worker (see refresh_title).
 	Title string `json:"title,omitempty"`
+	// StatusSince / ActivitySince are when Status / Activity last changed,
+	// stamped by the daemon at the transition (see entry.publish) so a listing
+	// can show how long a container has held its current state. Zero when the
+	// transition was never observed by the daemon — notably Activity on a
+	// poll-only (cross-arch / no-relay) container, which is reclassified from
+	// the pane on every listing and never stored, so there is no moment to mark.
+	StatusSince   time.Time `json:"status_since,omitzero"`
+	ActivitySince time.Time `json:"activity_since,omitzero"`
 }
 
 // entry is one container's state. Every mutable field except the published
@@ -97,6 +105,9 @@ type entry struct {
 	// capturing the pane. Set at ready in ensure_; read only there and by pushes.
 	activity_pushed bool
 
+	status_since   time.Time // when item.Status last changed; stamped in publish
+	activity_since time.Time // when item.Activity last changed (push path only)
+
 	restored       bool
 	session_done   bool   // session was evaluated for the current start generation
 	session_failed bool   // this generation's session exited non-zero; keep it visible
@@ -112,6 +123,28 @@ type entry struct {
 }
 
 func (e *entry) publish() {
+	// Stamp the moment Status or Activity takes its current value so a listing
+	// can show how long the container has held it. publish() also fires for
+	// unrelated changes (title refresh, version, error), so only an actual
+	// change to the field moves its mark. The poll-only activity path never
+	// reaches here — it is classified on the returned listing copy, not stored
+	// and never published — so activity_since stays zero for those containers
+	// and the listing honestly shows no duration.
+	now := time.Now()
+	if prev := e.snap.Load(); prev == nil {
+		e.status_since = now
+		e.activity_since = now
+	} else {
+		if prev.Status != e.item.Status {
+			e.status_since = now
+		}
+		if prev.Activity != e.item.Activity {
+			e.activity_since = now
+		}
+	}
+	e.item.StatusSince = e.status_since
+	e.item.ActivitySince = e.activity_since
+
 	it := e.item
 	e.snap.Store(&it)
 }
