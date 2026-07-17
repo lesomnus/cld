@@ -84,6 +84,107 @@ func TestSeedSettings(t *testing.T) {
 		require.Equal(t, float64(7), v["cleanupPeriodDays"])
 		require.Equal(t, "opus", v["model"])
 	})
+	t.Run("adds activity hooks for UserPromptSubmit and Stop", func(t *testing.T) {
+		out, err := claude.SeedSettings(nil)
+		require.NoError(t, err)
+
+		up := hookCommands(t, out, "UserPromptSubmit")
+		require.Len(t, up, 1)
+		require.Contains(t, up[0], "cld x activity working")
+		require.Contains(t, up[0], "|| true") // guarded: never fails the hook
+
+		stop := hookCommands(t, out, "Stop")
+		require.Len(t, stop, 1)
+		require.Contains(t, stop[0], "cld x activity waiting")
+
+		// Notification (permission prompt / idle) also reports waiting, so a turn
+		// that pauses without a Stop does not stick at working.
+		notif := hookCommands(t, out, "Notification")
+		require.Len(t, notif, 1)
+		require.Contains(t, notif[0], "cld x activity waiting")
+
+		// No SessionStart hook: the daemon seeds the initial state instead.
+		require.Empty(t, hookCommands(t, out, "SessionStart"))
+	})
+	t.Run("hook command is not HTML-escaped in the raw JSON", func(t *testing.T) {
+		out, err := claude.SeedSettings(nil)
+		require.NoError(t, err)
+		// The shell operators must stay legible, not become the escaped
+		// && / > that Go's default HTML escaping would emit.
+		require.Contains(t, string(out), "&&")
+		require.NotContains(t, string(out), "\\u0026")
+		require.NotContains(t, string(out), "\\u003e")
+	})
+	t.Run("does not clobber a malformed user hooks value", func(t *testing.T) {
+		// A present-but-wrong-type hooks value is the user's data; leave it be
+		// rather than overwrite it with our synthesized object.
+		in := []byte(`{"hooks": "surprise"}`)
+		out, err := claude.SeedSettings(in)
+		require.NoError(t, err)
+
+		var v map[string]any
+		require.NoError(t, json.Unmarshal(out, &v))
+		require.Equal(t, "surprise", v["hooks"])
+	})
+	t.Run("is idempotent: re-seeding its own output changes nothing", func(t *testing.T) {
+		once, err := claude.SeedSettings(nil)
+		require.NoError(t, err)
+		twice, err := claude.SeedSettings(once)
+		require.NoError(t, err)
+		require.Equal(t, string(once), string(twice)) // byte-identical, no dup hooks
+
+		require.Len(t, hookCommands(t, twice, "UserPromptSubmit"), 1)
+		require.Len(t, hookCommands(t, twice, "Stop"), 1)
+	})
+	t.Run("preserves the user's own hooks", func(t *testing.T) {
+		in := []byte(`{
+			"hooks": {
+				"UserPromptSubmit": [{"hooks": [{"type": "command", "command": "echo mine"}]}],
+				"PreToolUse": [{"matcher": "Write", "hooks": [{"type": "command", "command": "guard"}]}]
+			}
+		}`)
+		out, err := claude.SeedSettings(in)
+		require.NoError(t, err)
+
+		up := hookCommands(t, out, "UserPromptSubmit")
+		require.Contains(t, up, "echo mine")                          // user's kept
+		require.True(t, containsSubstr(up, "cld x activity working")) // cld's appended
+		require.Len(t, up, 2)
+
+		// The user's matcher-scoped hook on another event is untouched.
+		require.Equal(t, []string{"guard"}, hookCommands(t, out, "PreToolUse"))
+	})
+}
+
+// hookCommands returns every command string configured under settings.hooks[event].
+func hookCommands(t *testing.T, settings []byte, event string) []string {
+	t.Helper()
+	var v map[string]any
+	require.NoError(t, json.Unmarshal(settings, &v))
+
+	hooks, _ := v["hooks"].(map[string]any)
+	groups, _ := hooks[event].([]any)
+	var cmds []string
+	for _, g := range groups {
+		gm, _ := g.(map[string]any)
+		entries, _ := gm["hooks"].([]any)
+		for _, en := range entries {
+			em, _ := en.(map[string]any)
+			if s, ok := em["command"].(string); ok {
+				cmds = append(cmds, s)
+			}
+		}
+	}
+	return cmds
+}
+
+func containsSubstr(ss []string, sub string) bool {
+	for _, s := range ss {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestClassify(t *testing.T) {

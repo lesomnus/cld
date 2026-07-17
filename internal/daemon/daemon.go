@@ -91,6 +91,12 @@ type entry struct {
 	arch     string // container arch reported by the image ("amd64"/"arm64"); for gh
 	arch_ok  bool   // container arch == host arch; self-copy and watcher possible
 
+	// activity_pushed means claude's in-container hooks can report conversation
+	// activity over the scoped relay (arch match + remote control), so the worker
+	// owns e.item.Activity and the listing trusts the snapshot rather than
+	// capturing the pane. Set at ready in ensure_; read only there and by pushes.
+	activity_pushed bool
+
 	restored       bool
 	session_done   bool   // session was evaluated for the current start generation
 	session_failed bool   // this generation's session exited non-zero; keep it visible
@@ -422,14 +428,34 @@ func (d *Daemon) Items() []Item {
 // handler. A pane that cannot be read leaves the item classified as waiting
 // rather than failing the whole listing.
 func (d *Daemon) withActivity(ctx context.Context, items []Item) []Item {
+	d.fillActivity(ctx, items, nil)
+	return items
+}
+
+// fillActivity resolves each ready item's Activity. A push-capable container
+// (arch match + remote control) keeps its Activity current in the snapshot via
+// claude's in-container hooks, so a non-empty Activity is trusted as-is and the
+// pane is not captured. Only containers that cannot push (cross-arch, no relay)
+// fall back to classifying the captured tmux pane. When panes is non-nil (the
+// `?debug` listing), the pane IS captured even for push containers — for
+// comparison — but a pushed Activity is never overwritten.
+func (d *Daemon) fillActivity(ctx context.Context, items []Item, panes map[string]string) {
 	for i := range items {
 		if items[i].Status != StatusReady {
 			continue
 		}
+		pushed := items[i].Activity != ""
+		if pushed && panes == nil {
+			continue
+		}
 		pane, _ := d.tmux.CapturePane(ctx, devc.SessionName(items[i].Name))
-		items[i].Activity = classifyActivity(pane, items[i].Title)
+		if panes != nil {
+			panes[items[i].ID] = pane
+		}
+		if !pushed {
+			items[i].Activity = classifyActivity(pane, items[i].Title)
+		}
 	}
-	return items
 }
 
 // paneWorkingHint is the substring Claude Code's TUI shows in its footer while

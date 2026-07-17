@@ -193,6 +193,14 @@ func (d *Daemon) ensure_(ctx context.Context, e *entry) error {
 		} else {
 			go d.poll_container(wctx, e)
 		}
+		// The scoped control API is reachable in-container exactly when the arch
+		// matches (the cld binary is installed) and remote control is enabled
+		// (relay_api actually serves), so claude's hooks can push live activity
+		// over it. When they can, the worker owns e.item.Activity and the listing
+		// trusts the snapshot instead of scraping the tmux pane. Reassigned every
+		// time this block runs (a container restart clears watch_stop and re-runs
+		// it) so it can never go stale. See fillActivity.
+		e.activity_pushed = e.arch_ok && d.cfg.Auth.RemoteControlEnabled()
 	}
 
 	if e.item.Status == StatusProvisioning {
@@ -201,6 +209,13 @@ func (d *Daemon) ensure_(ctx context.Context, e *entry) error {
 	// Seed the conversation title from any resumed transcript so a listing shows
 	// it immediately, without waiting for the first transcript change to sync.
 	d.refresh_title(ctx, e)
+	// Seed the initial conversation activity before claude's first hook fires, so
+	// a just-ready push container is never blank: idle with no conversation yet,
+	// waiting once a resumed transcript gave it a title. Non-push containers keep
+	// Activity empty and are classified from the pane at listing time.
+	if e.activity_pushed && e.item.Status == StatusReady && e.item.Activity == "" {
+		e.item.Activity = classifyActivity("", e.item.Title)
+	}
 	e.publish()
 	d.log.Info("ready",
 		slog.String("id", short(id)),
@@ -260,6 +275,12 @@ func (d *Daemon) stop(ctx context.Context, e *entry) {
 	if e.item.Status != StatusSessionEnded {
 		e.item.Status = StatusStopped
 	}
+	// Drop the last pushed conversation activity: it belonged to the session
+	// that just died. Clearing it both blanks the listing for a non-ready
+	// container and lets ensure_'s seed (guarded on Activity=="") re-fire when
+	// the container restarts, instead of the next generation inheriting a stale
+	// "working"/"waiting" that only a completed turn's hook would correct.
+	e.item.Activity = ""
 	e.publish()
 	d.log.Info("stopped", slog.String("id", short(e.id)), slog.String("name", e.item.Name))
 }
@@ -835,6 +856,13 @@ func (d *Daemon) recreate_session(ctx context.Context, e *entry) error {
 	if e.item.Status == StatusSessionEnded || e.item.Status == StatusFailed {
 		e.item.Status = StatusReady
 		e.item.Error = ""
+	}
+	// Reset the pushed activity to its resting state so the recreated session
+	// does not inherit the ended one's last working/waiting: waiting if a resumed
+	// transcript kept a title, else idle. claude's hooks take over from the first
+	// prompt. Non-push entries are classified from the pane and need no reset.
+	if e.activity_pushed {
+		e.item.Activity = classifyActivity("", e.item.Title)
 	}
 	e.publish()
 	return nil

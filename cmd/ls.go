@@ -24,9 +24,14 @@ func NewCmdLs() *xli.Command {
 		Brief: "list devcontainers provisioned with claude",
 		Flags: flg.Flags{
 			&flg.Switch{Name: "wide", Alias: 'w', Brief: "show every column in plain, unstyled output"},
+			&flg.Switch{Name: "debug-activity", Brief: "dump the raw captured pane behind each activity classification"},
 		},
 		Handler: xli.OnRun(func(ctx context.Context, cmd *xli.Command, next xli.Next) error {
 			c := use_config.Must(ctx)
+
+			if dbg, _ := flg.Get[bool](cmd, "debug-activity"); dbg {
+				return renderActivityDebug(ctx, c.SocketPath())
+			}
 
 			items, err := daemon.FetchItems(ctx, c.SocketPath())
 			if err != nil {
@@ -39,7 +44,15 @@ func NewCmdLs() *xli.Command {
 				if len(id) > 12 {
 					id = id[:12]
 				}
-				rows[i] = []string{it.Name, it.Alias, id, string(it.Status), it.Version, abbreviate_home(it.LocalFolder), string(it.Activity), it.Title}
+				// Activity is only meaningful for a ready container; a stopped or
+				// session-ended one may still carry a last-pushed value in its
+				// snapshot, so blank the column for non-ready rows (the card
+				// renderer already gates activity on ready the same way).
+				activity := ""
+				if it.Status == daemon.StatusReady {
+					activity = string(it.Activity)
+				}
+				rows[i] = []string{it.Name, it.Alias, id, string(it.Status), it.Version, abbreviate_home(it.LocalFolder), activity, it.Title}
 			}
 
 			// --wide always prints every column as plain tab-separated text, no
@@ -58,6 +71,37 @@ func NewCmdLs() *xli.Command {
 			return renderLsPlain(cmd, rows)
 		}),
 	}
+}
+
+// renderActivityDebug prints, for every ready container, the activity the
+// daemon classified and the raw pane it captured to decide it. It exists to
+// diagnose "always shows waiting, never working": the classifier keys entirely
+// off whether the pane contains claude's interrupt hint, so seeing the actual
+// captured text tells whether the pane came back empty (a capture problem) or
+// simply lacked the expected hint string (a TUI-wording problem).
+func renderActivityDebug(ctx context.Context, socket string) error {
+	items, panes, err := daemon.FetchItemsDebug(ctx, socket)
+	if err != nil {
+		return err
+	}
+	for _, it := range items {
+		if it.Status != daemon.StatusReady {
+			continue
+		}
+		pane := panes[it.ID]
+		fmt.Printf("── %s (%s)\n", it.Alias, it.Name)
+		fmt.Printf("   activity=%s  title=%q  pane_bytes=%d\n", it.Activity, it.Title, len(pane))
+		if strings.TrimSpace(pane) == "" {
+			fmt.Println("   [pane was EMPTY — capture returned nothing]")
+		} else {
+			fmt.Println("   ┄┄ captured pane ┄┄")
+			for line := range strings.SplitSeq(strings.TrimRight(pane, "\n"), "\n") {
+				fmt.Printf("   │ %s\n", line)
+			}
+		}
+		fmt.Println()
+	}
+	return nil
 }
 
 // renderLsPlain writes the classic tab-aligned listing, used when stdout is not

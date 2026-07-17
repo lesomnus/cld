@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lesomnus/cld/cmd/config"
 	"github.com/lesomnus/cld/internal/agentx"
 	"github.com/lesomnus/cld/internal/claude"
 	"github.com/lesomnus/cld/internal/daemon"
@@ -32,6 +33,7 @@ func NewCmdX() *xli.Command {
 			new_cmd_x_agent(),
 			new_cmd_x_api(),
 			new_cmd_x_proxy(),
+			new_cmd_x_activity(),
 		},
 		Handler: xli.RequireSubcommand(),
 	}
@@ -106,6 +108,37 @@ func new_cmd_x_exec() *xli.Command {
 			}
 			os.Exit(code)
 			return nil
+		}),
+	}
+}
+
+// new_cmd_x_activity reports the session's conversation activity to the daemon.
+// claude's UserPromptSubmit/Stop hooks invoke it inside the container (see
+// claude.SeedSettings), reaching the daemon through the in-container relay
+// socket. Like the other `x` commands it does NOT read the project's cld.yaml
+// (root.go skips config for `x`): the relay socket the daemon exposes inside a
+// container is always at the DEFAULT path (entry.api_sock mirrors os.UserCacheDir
+// like Config.SocketPath), so it derives the socket from evaluated defaults. It
+// is best-effort: the hook wrapper discards output and forces a zero exit, and a
+// short timeout keeps a slow or absent daemon from ever stalling claude's prompt.
+func new_cmd_x_activity() *xli.Command {
+	return &xli.Command{
+		Name:  "activity",
+		Brief: "report this session's conversation activity to the daemon (used by hooks)",
+		Args: arg.Args{
+			&arg.String{Name: "state", Brief: "working, waiting, or idle"},
+		},
+		Handler: xli.OnRun(func(ctx context.Context, cmd *xli.Command, next xli.Next) error {
+			state := arg.MustGet[string](cmd, "state")
+
+			c := &config.Config{}
+			if err := c.Evaluate(); err != nil {
+				return err
+			}
+
+			ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			defer cancel()
+			return daemon.SetActivity(ctx, c.SocketPath(), state)
 		}),
 	}
 }

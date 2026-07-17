@@ -93,6 +93,13 @@ func (d *Daemon) scoped_api(self_id string) http.Handler {
 	mux.HandleFunc("GET /session/attach", only_self(d.handle_attach))
 	mux.HandleFunc("POST /session/new", only_self(d.handle_session_new))
 	mux.HandleFunc("POST /down", only_self(d.handle_down))
+	// A container reports its OWN conversation activity here (claude's hooks call
+	// `cld x activity <state>`). The identity is the bound self_id, not a caller
+	// argument, so it is inherently self-scoped — a container can only ever set
+	// its own activity — and needs no ?name= / only_self guard.
+	mux.HandleFunc("POST /activity", func(w http.ResponseWriter, r *http.Request) {
+		d.handle_activity(w, r, self_id)
+	})
 	mux.HandleFunc("POST /notify/exited", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("container") != self_id {
 			http.Error(w, "forbidden", http.StatusForbidden)
@@ -111,8 +118,51 @@ func (d *Daemon) scoped_api(self_id string) http.Handler {
 }
 
 func (d *Daemon) handle_items(w http.ResponseWriter, r *http.Request) {
+	items := d.Items()
+
+	// `?debug` also returns the raw captured pane per item, so `cld ls
+	// --debug-activity` can show exactly what the working/waiting classifier
+	// saw — the pane string is the only input to that decision.
+	var panes map[string]string
+	if r.URL.Query().Has("debug") {
+		panes = make(map[string]string, len(items))
+	}
+	d.fillActivity(r.Context(), items, panes)
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"items": d.withActivity(r.Context(), d.Items())})
+	resp := map[string]any{"items": items}
+	if panes != nil {
+		resp["panes"] = panes
+	}
+	json.NewEncoder(w).Encode(resp)
+}
+
+// handle_activity records a container's self-reported conversation activity,
+// pushed by claude's in-container hooks. self_id is bound by the scoped relay,
+// so the state only ever applies to the caller's own session. The write goes
+// through the entry's worker mailbox (like handle_notify_exited) so it never
+// races the worker's own e.item mutations, and republishes only on a change.
+func (d *Daemon) handle_activity(w http.ResponseWriter, r *http.Request, self_id string) {
+	state := Activity(r.URL.Query().Get("state"))
+	switch state {
+	case ActivityWorking, ActivityWaiting, ActivityIdle:
+	default:
+		http.Error(w, "invalid state", http.StatusBadRequest)
+		return
+	}
+
+	e := d.lookup(self_id)
+	if e == nil {
+		http.Error(w, "session is not tracked", http.StatusNotFound)
+		return
+	}
+	e.mbox.post(func() {
+		if e.item.Status == StatusReady && e.item.Activity != state {
+			e.item.Activity = state
+			e.publish()
+		}
+	})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (d *Daemon) handle_info(w http.ResponseWriter, r *http.Request) {
@@ -456,28 +506,68 @@ func NewSocketClient(socket string) *http.Client {
 
 // FetchItems asks a running daemon for its listing.
 func FetchItems(ctx context.Context, socket string) ([]Item, error) {
+	items, _, err := fetchItems(ctx, socket, false)
+	return items, err
+}
+
+// FetchItemsDebug is FetchItems plus the raw captured pane per item ID, the
+// sole input to the activity classifier — for diagnosing why a container reads
+// as working vs waiting.
+func FetchItemsDebug(ctx context.Context, socket string) ([]Item, map[string]string, error) {
+	return fetchItems(ctx, socket, true)
+}
+
+func fetchItems(ctx context.Context, socket string, debug bool) ([]Item, map[string]string, error) {
 	hc := NewSocketClient(socket)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://cld/items", nil)
+	url := "http://cld/items"
+	if debug {
+		url += "?debug=1"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	res, err := hc.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("is `cld serve` running? %w", err)
+		return nil, nil, fmt.Errorf("is `cld serve` running? %w", err)
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("daemon: %s", res.Status)
+		return nil, nil, fmt.Errorf("daemon: %s", res.Status)
 	}
 
 	var body struct {
-		Items []Item `json:"items"`
+		Items []Item            `json:"items"`
+		Panes map[string]string `json:"panes"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return body.Items, nil
+	return body.Items, body.Panes, nil
+}
+
+// SetActivity reports this session's conversation activity to the daemon over
+// the in-container relay socket. Called by `cld x activity <state>` from
+// claude's hooks; best-effort by design (the hook wrapper swallows failures).
+func SetActivity(ctx context.Context, socket string, state string) error {
+	hc := NewSocketClient(socket)
+	url := "http://cld/activity?state=" + urlpkg.QueryEscape(state)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		return err
+	}
+
+	res, err := hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("is `cld serve` running? %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 512))
+		return fmt.Errorf("daemon: %s: %s", res.Status, strings.TrimSpace(string(body)))
+	}
+	return nil
 }
 
 // FetchInfo asks a running daemon where it (and its tmux server) lives.

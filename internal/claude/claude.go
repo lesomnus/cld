@@ -4,6 +4,7 @@
 package claude
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -172,10 +173,18 @@ func SanitizeUserSettings(data []byte) ([]byte, bool) {
 	return out, true
 }
 
-// SeedSettings merges retention settings into an existing settings.json
-// document (may be nil). cleanupPeriodDays must be large: cleanup is keyed
-// on file mtime, which "docker cp" preserves, so restored transcripts would
-// otherwise be pruned on the first start.
+// cldBin is the absolute path of the in-container cld binary (install_dir/cld),
+// used by the activity-reporting hooks. It is absolute so the hook works
+// regardless of the session PATH, and kept STABLE across versions so the
+// idempotent merge below recognizes an entry it wrote before.
+const cldBin = "/usr/local/bin/cld"
+
+// SeedSettings merges cld's own keys into an existing settings.json document
+// (may be nil): the transcript retention floor, and hooks that report the live
+// conversation activity to the daemon. cleanupPeriodDays must be large: cleanup
+// is keyed on file mtime, which "docker cp" preserves, so restored transcripts
+// would otherwise be pruned on the first start. The hooks let `cld ls` show
+// working/waiting from an authoritative signal instead of scraping the pane.
 func SeedSettings(existing []byte) ([]byte, error) {
 	doc := map[string]any{}
 	if len(existing) > 0 {
@@ -188,5 +197,97 @@ func SeedSettings(existing []byte) ([]byte, error) {
 		doc["cleanupPeriodDays"] = 365
 	}
 
-	return json.MarshalIndent(doc, "", "  ")
+	// A prompt submission means claude is about to generate (working); a Stop
+	// means the turn finished (waiting); a Notification fires when claude pauses
+	// for input — a permission prompt or 60s of idle — which is also a waiting
+	// state and, crucially, corrects a turn that stopped without a Stop (e.g. a
+	// permission prompt) so it doesn't stick at "working". The container's
+	// initial idle/waiting state is seeded by the daemon (see ensure_), so no
+	// SessionStart hook is needed — one would wrongly report a resume as idle.
+	mergeCommandHook(doc, "UserPromptSubmit", activityHookCommand("working"))
+	mergeCommandHook(doc, "Stop", activityHookCommand("waiting"))
+	mergeCommandHook(doc, "Notification", activityHookCommand("waiting"))
+
+	return marshalIndent(doc)
+}
+
+// marshalIndent renders settings without Go's default HTML escaping, so the
+// hook command's shell operators (&&, >) stay legible in settings.json instead
+// of becoming && / >. The output is deterministic (json sorts map
+// keys), which the idempotent seed relies on.
+func marshalIndent(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// activityHookCommand is the shell run by a lifecycle hook to report activity.
+// It is guarded so a container without the cld binary (arch mismatch) or with
+// the relay disabled (remote control off) fails silently rather than surfacing
+// an error on every prompt and stop: the `[ -x ]` test skips a missing binary,
+// output is discarded, and `|| true` forces a zero exit no matter what.
+func activityHookCommand(state string) string {
+	return "[ -x " + cldBin + " ] && " + cldBin + " x activity " + state + " >/dev/null 2>&1 || true"
+}
+
+// mergeCommandHook idempotently ensures settings.hooks[event] contains a
+// matcher-less group whose command list holds {type:command, command}. It never
+// touches, reorders, or removes the user's own hooks, and adding the same
+// command twice is a no-op — so a re-provision produces byte-identical output
+// and seed_file leaves the file alone. The doc is a json.Unmarshal result, so
+// objects are map[string]any and arrays are []any; a wrong type assertion would
+// silently drop user hooks, so every access is guarded.
+func mergeCommandHook(doc map[string]any, event, command string) {
+	// Only synthesize a hooks object when it is absent or null; a present value
+	// of an unexpected type is the user's own data (however malformed) and must
+	// not be clobbered, so bail rather than overwrite it.
+	if raw, present := doc["hooks"]; !present || raw == nil {
+		doc["hooks"] = map[string]any{}
+	}
+	hooks, ok := doc["hooks"].(map[string]any)
+	if !ok {
+		return
+	}
+
+	// Same for the event's group list: an absent/null value is ours to create,
+	// but a present non-array is the user's — leave it untouched.
+	var groups []any
+	if raw, present := hooks[event]; present && raw != nil {
+		groups, ok = raw.([]any)
+		if !ok {
+			return
+		}
+	}
+
+	// Already present under this event? Then it is a no-op.
+	for _, g := range groups {
+		gm, ok := g.(map[string]any)
+		if !ok {
+			continue
+		}
+		entries, _ := gm["hooks"].([]any)
+		for _, en := range entries {
+			em, ok := en.(map[string]any)
+			if !ok {
+				continue
+			}
+			if em["type"] == "command" && em["command"] == command {
+				return
+			}
+		}
+	}
+
+	// Append a NEW matcher-less group carrying only our command, leaving every
+	// existing group untouched. UserPromptSubmit and Stop take no tool matcher,
+	// so the "matcher" key is deliberately omitted.
+	hooks[event] = append(groups, map[string]any{
+		"hooks": []any{
+			map[string]any{"type": "command", "command": command},
+		},
+	})
 }
