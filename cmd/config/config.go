@@ -28,6 +28,7 @@ type Config struct {
 
 	Auth    AuthConfig    `yaml:"auth"`
 	Release ReleaseConfig `yaml:"release"`
+	Gh      GhConfig      `yaml:"gh"`
 	Sync    SyncConfig    `yaml:"sync"`
 	Up      UpConfig      `yaml:"up"`
 	Install InstallConfig `yaml:"install"`

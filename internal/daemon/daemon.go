@@ -19,6 +19,7 @@ import (
 	"github.com/lesomnus/cld/cmd/config"
 	"github.com/lesomnus/cld/internal/broker"
 	"github.com/lesomnus/cld/internal/devc"
+	"github.com/lesomnus/cld/internal/ghcli"
 	"github.com/lesomnus/cld/internal/release"
 	"github.com/lesomnus/cld/internal/tmuxx"
 	"github.com/moby/moby/api/types/events"
@@ -87,7 +88,8 @@ type entry struct {
 	dev_name   string // devcontainer.json "name", or "" if unset
 
 	platform release.Platform
-	arch_ok  bool // container arch == host arch; self-copy and watcher possible
+	arch     string // container arch reported by the image ("amd64"/"arm64"); for gh
+	arch_ok  bool   // container arch == host arch; self-copy and watcher possible
 
 	restored       bool
 	session_done   bool   // session was evaluated for the current start generation
@@ -132,6 +134,7 @@ type Daemon struct {
 	cli  *client.Client
 	tmux *tmuxx.Server
 	rel  *release.Manager
+	gh   *ghcli.Fetcher
 	log  *slog.Logger
 
 	self     string // path of the cld executable, reused as pane client and watcher
@@ -169,6 +172,7 @@ func New(cfg *config.Config, cli *client.Client, log *slog.Logger) (*Daemon, err
 			Channel: cfg.Release.Channel,
 			Log:     log,
 		},
+		gh:       &ghcli.Fetcher{Dir: cfg.GhBinDir()},
 		log:      log,
 		self:     self,
 		sessions: &sessionStore{dir: filepath.Join(cfg.CacheDir, "sessions")},

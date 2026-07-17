@@ -17,6 +17,7 @@ import (
 	"github.com/lesomnus/cld/internal/claude"
 	"github.com/lesomnus/cld/internal/devc"
 	"github.com/lesomnus/cld/internal/dockerx"
+	"github.com/lesomnus/cld/internal/ghcli"
 	"github.com/lesomnus/cld/internal/release"
 	"github.com/lesomnus/cld/internal/syncer"
 	"github.com/lesomnus/cld/internal/tmuxx"
@@ -137,6 +138,12 @@ func (d *Daemon) ensure_(ctx context.Context, e *entry) error {
 			return fmt.Errorf("install cld: %w", err)
 		}
 	}
+
+	// Best-effort: when the workspace has a GitHub remote, inject the gh CLI so
+	// it is on PATH in the container. Independent of the arch match — gh is
+	// fetched for the container's own architecture — and a convenience, so a
+	// failure must not block provisioning.
+	d.install_gh(ctx, e, id)
 
 	if err := d.prepare_state(ctx, e, id); err != nil {
 		return fmt.Errorf("prepare state: %w", err)
@@ -339,6 +346,7 @@ func (d *Daemon) resolve(ctx context.Context, e *entry, id string, labels map[st
 		return err
 	}
 	e.platform = platform
+	e.arch = arch
 	e.arch_ok = arch == runtime.GOARCH
 	return nil
 }
@@ -415,6 +423,61 @@ func (d *Daemon) link_user_claude(ctx context.Context, e *entry, id string) {
 // binary so libc does not matter.
 func (d *Daemon) install_self(ctx context.Context, id string) error {
 	return d.install_binary(ctx, id, d.self, "cld")
+}
+
+// install_gh injects the GitHub CLI into the container at install_dir/gh when
+// the workspace is a git repository with a GitHub remote. gh is fetched for the
+// container's architecture (libc-agnostic static binary) and installed the same
+// way as claude. Entirely best-effort: it is disabled by config for users who
+// don't want it, skipped when there is no GitHub remote, and every failure is
+// logged, never returned, so it can't fail provisioning.
+func (d *Daemon) install_gh(ctx context.Context, e *entry, id string) {
+	if d.cfg.Gh.Disabled {
+		return
+	}
+	if !d.has_github_remote(ctx, e, id) {
+		return
+	}
+
+	arch, err := ghcli.ArchFor(e.arch)
+	if err != nil {
+		d.log.Warn("skip gh install",
+			slog.String("name", e.item.Name), slog.String("error", err.Error()))
+		return
+	}
+
+	version, bin, err := d.gh.Ensure(ctx, arch)
+	if err != nil {
+		d.log.Warn("fetch gh failed",
+			slog.String("name", e.item.Name), slog.String("error", err.Error()))
+		return
+	}
+	if err := d.install_binary(ctx, id, bin, "gh"); err != nil {
+		d.log.Warn("install gh failed",
+			slog.String("name", e.item.Name), slog.String("error", err.Error()))
+		return
+	}
+	d.log.Info("gh installed",
+		slog.String("id", short(id)), slog.String("name", e.item.Name),
+		slog.String("version", version))
+}
+
+// has_github_remote reports whether the container's workspace is a git
+// repository with a remote pointing at github.com. It reads every configured
+// remote URL (https and ssh both contain the host), so any GitHub remote —
+// origin or otherwise — counts. A non-repo, a repo with no GitHub remote, or a
+// container without git all read as false.
+func (d *Daemon) has_github_remote(ctx context.Context, e *entry, id string) bool {
+	if e.item.Workspace == "" {
+		return false
+	}
+	out, code, err := dockerx.ExecOutput(ctx, d.cli, id, e.user, []string{
+		"git", "-C", e.item.Workspace, "config", "--get-regexp", `^remote\..*\.url$`,
+	})
+	if err != nil || code != 0 {
+		return false
+	}
+	return strings.Contains(out, "github.com")
 }
 
 // install_binary copies a host binary into install_dir/name unless a

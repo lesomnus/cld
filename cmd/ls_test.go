@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/lesomnus/cld/internal/daemon"
@@ -27,14 +28,24 @@ func TestAbbreviateHomeIn(t *testing.T) {
 	}
 }
 
-func TestCardIdentityOmitsEmptyFields(t *testing.T) {
-	// A missing alias must not leave a dangling " · " separator.
-	line := cardIdentity(daemon.Item{Name: "web", ID: "abc123", Version: "1.2.3", LocalFolder: "~/src/web"})
-	require.NotContains(t, line, " ·  · ")
-	require.Contains(t, line, "abc123")
-	require.NotContains(t, line, "· abc123 · ") // no leading empty alias before the id
+// TestCardsFixedWidthColumns checks the first-line identity fields line up in
+// fixed columns even when names differ in length: the container id (and every
+// field after it) must start at the same screen column on every card. Tests do
+// not run on a TTY, so lipgloss renders without color and the padding is
+// plain spaces we can measure directly.
+func TestCardsFixedWidthColumns(t *testing.T) {
+	var b strings.Builder
+	err := renderLsCards(&b, []daemon.Item{
+		{Name: "web", Alias: "w", ID: "aaaaaa", Status: daemon.StatusReady},
+		{Name: "a-very-long-name", Alias: "svc", ID: "bbbbbb", Status: daemon.StatusReady},
+	})
+	require.NoError(t, err)
 
-	// A present alias is included, in order, before the container id.
-	line = cardIdentity(daemon.Item{Name: "web", Alias: "w", ID: "abc123"})
-	require.Contains(t, line, "w · abc123")
+	// The "╭" line of each card carries the identity columns. Alias leads, so it
+	// precedes the name; the container id column must start at the same screen
+	// column on both cards despite the very different name lengths.
+	lines := strings.Split(b.String(), "\n")
+	l1, l2 := lines[0], lines[2]
+	require.Equal(t, strings.Index(l1, "aaaaaa"), strings.Index(l2, "bbbbbb"), "container id column must align")
+	require.Less(t, strings.Index(l1, "w"), strings.Index(l1, "web"), "alias precedes the full name")
 }

@@ -101,6 +101,12 @@ type ReleaseConfig struct {
 	CheckInterval Duration `yaml:"check_interval"`
 }
 
+type GhConfig struct {
+	// Disabled turns off injecting the GitHub CLI (`gh`) into a container whose
+	// workspace has a GitHub remote. Off by default (zero value = enabled).
+	Disabled bool `yaml:"disabled"`
+}
+
 type SyncConfig struct {
 	// Delay after a change before the conversation state is copied out,
 	// coalescing bursts of file events into a single copy.
@@ -217,6 +223,12 @@ func (c *Config) GitConfigPath() string {
 // laid out as <BinDir>/<version>/<platform>/claude.
 func (c *Config) BinDir() string {
 	return filepath.Join(c.CacheDir, "bin")
+}
+
+// GhBinDir is the root of the gh binary cache,
+// laid out as <GhBinDir>/<version>/<arch>/gh.
+func (c *Config) GhBinDir() string {
+	return filepath.Join(c.CacheDir, "gh")
 }
 
 // ProjectBackupDir holds a project's whole backup — conversation transcripts

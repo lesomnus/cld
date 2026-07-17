@@ -72,45 +72,88 @@ func renderLsPlain(w io.Writer, rows [][]string) error {
 }
 
 var (
-	// cardNameStyle renders a card's container name — the one bold element.
-	cardNameStyle = lipgloss.NewStyle().Bold(true)
+	// cardAliasStyle renders a card's alias — the leading, brightest field,
+	// since the alias is the handle used most often.
+	cardAliasStyle = tui.TitleStyle
+	// cardNameStyle renders the full container name at normal weight: readable
+	// but quieter than the alias.
+	cardNameStyle = lipgloss.NewStyle()
 	// cardWorkingStyle accents the "working" activity so an active conversation
 	// stands out at a glance; the quieter states stay dim.
 	cardWorkingStyle = tui.TitleStyle
 )
 
-// renderLsCards draws one two-line card per container. A left curve (╭ over ╰),
-// colored by lifecycle status, brackets each card so adjacent cards separate
-// without a blank line between them. The first line is the identity
-// (name · alias · container · version · folder); the second is the live
-// conversation — activity and title for a ready container, or the lifecycle
-// state otherwise.
-func renderLsCards(w io.Writer, items []daemon.Item) error {
-	var b strings.Builder
-	for _, it := range items {
-		curve := tui.StatusStyle(string(it.Status))
-		fmt.Fprintf(&b, "%s %s\n", curve.Render("╭"), cardIdentity(it))
-		fmt.Fprintf(&b, "%s %s\n", curve.Render("╰"), cardState(it))
-	}
-	_, err := fmt.Fprint(w, b.String())
-	return err
-}
-
-// cardIdentity is a card's first line: the bold name followed by the dimmed,
-// dot-separated identity fields, empty ones omitted so there are no dangling
-// separators.
-func cardIdentity(it daemon.Item) string {
+// cardIdentityCells returns a card's first-line fields in display order —
+// alias, name, container, version, folder — each with its own style. The order
+// leads with the alias; widths are equalized across cards by renderLsCards.
+func cardIdentityCells(it daemon.Item) []struct {
+	text  string
+	style lipgloss.Style
+} {
 	id := it.ID
 	if len(id) > 12 {
 		id = id[:12]
 	}
-	meta := make([]string, 0, 4)
-	for _, f := range []string{it.Alias, id, it.Version, abbreviate_home(it.LocalFolder)} {
-		if f != "" {
-			meta = append(meta, f)
+	return []struct {
+		text  string
+		style lipgloss.Style
+	}{
+		{it.Alias, cardAliasStyle},
+		{it.Name, cardNameStyle},
+		{id, tui.HelpStyle},
+		{it.Version, tui.HelpStyle},
+		{abbreviate_home(it.LocalFolder), tui.HelpStyle},
+	}
+}
+
+// renderLsCards draws one two-line card per container. A left curve (╭ over ╰),
+// colored by lifecycle status, brackets each card so adjacent cards separate
+// without a blank line between them. The first line is the identity, laid out
+// in fixed-width columns (alias, name, container, version, folder) so the
+// fields line up down the list regardless of name length; the second is the
+// live conversation — activity and title for a ready container, or the
+// lifecycle state otherwise.
+func renderLsCards(w io.Writer, items []daemon.Item) error {
+	// Each identity column is padded to the widest cell across all cards, so a
+	// short name never shifts the columns after it out of alignment. A column
+	// no card fills (e.g. no aliases at all) collapses to nothing.
+	ncol := len(cardIdentityCells(daemon.Item{}))
+	widths := make([]int, ncol)
+	last := -1 // highest-indexed column any card fills; it is not padded
+	for _, it := range items {
+		for i, c := range cardIdentityCells(it) {
+			if wd := lipgloss.Width(c.text); wd > widths[i] {
+				widths[i] = wd
+			}
 		}
 	}
-	return cardNameStyle.Render(it.Name) + "  " + tui.HelpStyle.Render(strings.Join(meta, " · "))
+	for i, wd := range widths {
+		if wd > 0 {
+			last = i
+		}
+	}
+
+	var b strings.Builder
+	for _, it := range items {
+		curve := tui.StatusStyle(string(it.Status))
+		parts := make([]string, 0, ncol)
+		for i, c := range cardIdentityCells(it) {
+			if widths[i] == 0 {
+				continue
+			}
+			// Pad every column to its width except the last one, whose trailing
+			// padding would just be invisible whitespace at the line's end.
+			if i == last {
+				parts = append(parts, c.style.Render(c.text))
+			} else {
+				parts = append(parts, c.style.Width(widths[i]).Render(c.text))
+			}
+		}
+		fmt.Fprintf(&b, "%s %s\n", curve.Render("╭"), strings.Join(parts, "  "))
+		fmt.Fprintf(&b, "%s %s\n", curve.Render("╰"), cardState(it))
+	}
+	_, err := fmt.Fprint(w, b.String())
+	return err
 }
 
 // cardState is a card's second line. For a ready container it is the live

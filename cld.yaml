@@ -54,6 +54,11 @@ release:
   # How often to check the channel for a new version.
   #check_interval: 1h
 
+gh:
+  # Inject the GitHub CLI (`gh`) into a container whose workspace has a
+  # GitHub remote. Enabled by default; set to true to turn it off.
+  #disabled: false
+
 sync:
   # Delay after a change before conversation state is copied out.
   #debounce: 3s
