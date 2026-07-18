@@ -35,9 +35,14 @@ func TestWatchTableWorkflowColumn(t *testing.T) {
 	out = noWf.table()
 	require.NotContains(t, out, "WORKFLOWS", "column should collapse when no workflows")
 
-	// A narrow-width frame must not panic and keeps the header.
+	// A narrow-width frame must not panic and keeps the table columns. The
+	// activity column has no header and shows only a glyph, so "ACTIVITY" is
+	// gone and the status word is not rendered.
 	narrow := withWf
 	narrow.width = 40
-	require.Contains(t, narrow.table(), "ACTIVITY")
-	require.Contains(t, withWf.frame_view(), "cld watch")
+	out = narrow.table()
+	require.Contains(t, out, "NAME")
+	require.NotContains(t, out, "ACTIVITY")
+	require.NotContains(t, withWf.table(), "working")
+	require.Contains(t, withWf.frame_view(), watchLogo)
 }

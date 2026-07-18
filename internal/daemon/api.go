@@ -50,7 +50,21 @@ func (d *Daemon) api() http.Handler {
 	mux.HandleFunc("POST /purge", d.handle_purge)
 	mux.HandleFunc("POST /purge/all", d.handle_purge_all)
 	mux.HandleFunc("POST /auth/credentials", d.handle_set_credentials)
+	mux.HandleFunc("GET /usage", d.handle_usage(""))
 	return mux
+}
+
+// handle_usage reports subscription usage for every login the daemon can see
+// (the broker login and each ready session's own login); see Daemon.Usage. The
+// per-source results are memoized, so polling this is cheap. selfID scopes the
+// report: "" on the trusted host API (all logins), or a container id on the
+// in-container relay (only that container's own login).
+func (d *Daemon) handle_usage(selfID string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		report := d.Usage(r.Context(), selfID)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(report)
+	}
 }
 
 // scoped_api is the control plane exposed to ONE container through the
@@ -114,6 +128,10 @@ func (d *Daemon) scoped_api(self_id string) http.Handler {
 	// That is the same trust boundary as remote_control itself (which gates this
 	// relay's existence); set remote_control=false to close it entirely.
 	mux.HandleFunc("POST /auth/credentials", d.handle_set_credentials)
+	// Usage is self-scoped: a container sees only its own login's usage (and the
+	// broker login's, but only if it is itself a broker session), never another
+	// project's. The scope is the bound self_id, not a caller argument.
+	mux.HandleFunc("GET /usage", d.handle_usage(self_id))
 	return mux
 }
 
@@ -552,6 +570,32 @@ func fetchItems(ctx context.Context, socket string, debug bool) ([]Item, map[str
 		return nil, nil, err
 	}
 	return body.Items, body.Panes, nil
+}
+
+// FetchUsage asks the daemon for subscription usage across every login it can
+// see (the broker login and each ready session's login). Backs `cld usage` and
+// the usage line in `cld watch`.
+func FetchUsage(ctx context.Context, socket string) (*UsageReport, error) {
+	hc := NewSocketClient(socket)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://cld/usage", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	res, err := hc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("is `cld serve` running? %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("daemon: %s", res.Status)
+	}
+
+	var report UsageReport
+	if err := json.NewDecoder(res.Body).Decode(&report); err != nil {
+		return nil, err
+	}
+	return &report, nil
 }
 
 // SetActivity reports this session's conversation activity to the daemon over

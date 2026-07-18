@@ -34,6 +34,20 @@ var tagStyle = lipgloss.NewStyle().Bold(true).Foreground(accent)
 // the codebase while giving it a little color on a terminal.
 func Tag() string { return tagStyle.Render("cld") }
 
+// GaugeStyle colors a utilization percentage (0–100): green while there is
+// plenty of headroom, yellow past the halfway mark, red as it nears the cap.
+func GaugeStyle(pct float64) lipgloss.Style {
+	s := lipgloss.NewStyle()
+	switch {
+	case pct >= 80:
+		return s.Foreground(red)
+	case pct >= 50:
+		return s.Foreground(yellow)
+	default:
+		return s.Foreground(green)
+	}
+}
+
 // StatusStyle maps a devcontainer status word to a color for list rendering.
 func StatusStyle(status string) lipgloss.Style {
 	s := lipgloss.NewStyle()

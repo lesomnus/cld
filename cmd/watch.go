@@ -20,14 +20,11 @@ import (
 // (a working conversation, a provisioning container) so the view visibly ticks.
 var watchSpinner = []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"}
 
-// watchStatusOrder fixes the summary/glyph ordering of the non-ready lifecycle
-// states so the header counts read the same every frame.
-var watchStatusOrder = []daemon.Status{
-	daemon.StatusProvisioning,
-	daemon.StatusStopped,
-	daemon.StatusSessionEnded,
-	daemon.StatusFailed,
-}
+// watchLogo is the Claude sunburst mark shown top-left in place of a title;
+// watchLogoStyle paints it Claude's brand orange.
+const watchLogo = "✻"
+
+var watchLogoStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("173"))
 
 func NewCmdWatch() *xli.Command {
 	interval := time.Second
@@ -66,6 +63,7 @@ func NewCmdWatch() *xli.Command {
 			if !term.IsTerminal(int(os.Stdout.Fd())) {
 				m.now = time.Now()
 				m.items, m.err = daemon.FetchItems(ctx, c.SocketPath())
+				m.usage, _ = daemon.FetchUsage(ctx, c.SocketPath())
 				m.loaded = true
 				fmt.Fprint(os.Stdout, m.frame_view())
 				return nil
@@ -89,6 +87,12 @@ type watchModel struct {
 	items  []daemon.Item
 	err    error
 	loaded bool
+
+	// usage is the latest subscription-usage snapshot shown in the footer,
+	// refreshed on its own slower cadence (watchUsageInterval) than the item
+	// poll since the daemon caches usage for a minute anyway. Nil until the
+	// first fetch returns; a fetch error leaves the previous snapshot in place.
+	usage *daemon.UsageReport
 
 	// bell rings the terminal bell when a container transitions working→waiting.
 	// prevAct remembers each container's last-seen activity (keyed by ID) so a
@@ -144,14 +148,37 @@ type watchItemsMsg struct {
 	items []daemon.Item
 	err   error
 }
+type watchUsageMsg struct{ report *daemon.UsageReport }
 type watchRefetchMsg struct{}
 type watchTickMsg time.Time
+type watchUsageTickMsg struct{}
 
 func (m watchModel) fetch() tea.Cmd {
 	return func() tea.Msg {
 		items, err := daemon.FetchItems(m.ctx, m.socket)
 		return watchItemsMsg{items: items, err: err}
 	}
+}
+
+// fetchUsage pulls the usage report for the footer. A fetch error is swallowed
+// (report stays nil / unchanged) so a usage hiccup never disturbs the listing.
+func (m watchModel) fetchUsage() tea.Cmd {
+	return func() tea.Msg {
+		report, err := daemon.FetchUsage(m.ctx, m.socket)
+		if err != nil {
+			return watchUsageMsg{report: nil}
+		}
+		return watchUsageMsg{report: report}
+	}
+}
+
+// watchUsageInterval is how often the footer's usage refreshes. It tracks the
+// daemon's cache TTL exactly: the daemon serves the same memoized value until
+// UsageTTL elapses, so polling any faster would only re-fetch identical data.
+const watchUsageInterval = daemon.UsageTTL
+
+func watchUsageTick() tea.Cmd {
+	return tea.Tick(watchUsageInterval, func(time.Time) tea.Msg { return watchUsageTickMsg{} })
 }
 
 // watchAnim is the spinner/clock cadence: fast enough to animate smoothly and
@@ -163,7 +190,7 @@ func watchTick() tea.Cmd {
 }
 
 func (m watchModel) Init() tea.Cmd {
-	return tea.Batch(m.fetch(), watchTick())
+	return tea.Batch(m.fetch(), m.fetchUsage(), watchTick(), watchUsageTick())
 }
 
 func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -174,7 +201,7 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "r":
 			// Force an out-of-band refresh without waiting for the interval.
-			return m, m.fetch()
+			return m, tea.Batch(m.fetch(), m.fetchUsage())
 		}
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -196,6 +223,15 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, next
 	case watchRefetchMsg:
 		return m, m.fetch()
+	case watchUsageMsg:
+		// Keep the prior snapshot on a nil (errored) report so the footer does
+		// not blink to empty on a transient failure.
+		if msg.report != nil {
+			m.usage = msg.report
+		}
+		return m, nil
+	case watchUsageTickMsg:
+		return m, tea.Batch(m.fetchUsage(), watchUsageTick())
 	}
 	return m, nil
 }
@@ -229,88 +265,91 @@ func (m watchModel) frame_view() string {
 
 	b.WriteByte('\n')
 	b.WriteString(m.table())
-	b.WriteByte('\n')
-	b.WriteString(tui.HelpStyle.Render(fmt.Sprintf("  [q] quit  [r] refresh  ·  every %s", m.interval)))
-	b.WriteByte('\n')
-	return b.String()
+
+	// Usage bars are pinned to the very bottom of the screen, right-aligned; the
+	// old key-hint/interval line is gone.
+	return m.pinBottom(b.String(), usageBottom(m.usage, m.now, m.width))
 }
 
-// header is the top line: the title, the container count, per-state counts, and
-// a right-aligned clock.
+// usageBottom builds the usage lines pinned to the screen bottom: one
+// right-aligned braille bar per login (no account name), or nil when there is
+// nothing to show. now feeds the time-to-reset; width right-aligns each line.
+func usageBottom(report *daemon.UsageReport, now time.Time, width int) []string {
+	if report == nil || len(report.Sources) == 0 {
+		return nil
+	}
+	lines := make([]string, 0, len(report.Sources))
+	for _, s := range report.Sources {
+		line := usageBar(s, now)
+		if width > 0 {
+			if pad := width - lipgloss.Width(line); pad > 0 {
+				line = strings.Repeat(" ", pad) + line
+			}
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+// pinBottom places the bottom lines on the last rows of the alt-screen, filling
+// the gap under the top content with blank lines so the usage bars sit at the
+// very bottom. With no known height (piped output) it just appends them under
+// the content.
+func (m watchModel) pinBottom(top string, bottom []string) string {
+	trimmed := strings.TrimRight(top, "\n")
+	if len(bottom) == 0 {
+		return trimmed + "\n"
+	}
+	if m.height <= 0 {
+		return trimmed + "\n\n" + strings.Join(bottom, "\n") + "\n"
+	}
+	lines := strings.Split(trimmed, "\n")
+	gap := max(m.height-len(lines)-len(bottom), 1)
+	for range gap {
+		lines = append(lines, "")
+	}
+	lines = append(lines, bottom...)
+	return strings.Join(lines, "\n")
+}
+
+// header is the top line: just the Claude mark on the left and a right-aligned
+// clock — no title text or counts.
 func (m watchModel) header() string {
-	var working, waiting, idle int
-	byStatus := map[daemon.Status]int{}
-	for _, it := range m.items {
-		if it.Status != daemon.StatusReady {
-			byStatus[it.Status]++
-			continue
-		}
-		switch it.Activity {
-		case daemon.ActivityWorking:
-			working++
-		case daemon.ActivityIdle:
-			idle++
-		default:
-			waiting++
-		}
-	}
-
-	segs := []string{}
-	if working > 0 {
-		segs = append(segs, cardWorkingStyle.Render(fmt.Sprintf("%d working", working)))
-	}
-	if waiting > 0 {
-		segs = append(segs, tui.HelpStyle.Render(fmt.Sprintf("%d waiting", waiting)))
-	}
-	if idle > 0 {
-		segs = append(segs, tui.HelpStyle.Render(fmt.Sprintf("%d idle", idle)))
-	}
-	for _, s := range watchStatusOrder {
-		if n := byStatus[s]; n > 0 {
-			segs = append(segs, tui.StatusStyle(string(s)).Render(fmt.Sprintf("%d %s", n, s)))
-		}
-	}
-
-	dot := tui.HelpStyle.Render("  ·  ")
-	noun := "devcontainers"
-	if len(m.items) == 1 {
-		noun = "devcontainer"
-	}
-	left := tui.TitleStyle.Render("cld watch") +
-		tui.HelpStyle.Render(fmt.Sprintf("  ·  %d %s", len(m.items), noun))
-	if len(segs) > 0 {
-		left += dot + strings.Join(segs, tui.HelpStyle.Render(" · "))
-	}
-
+	logo := watchLogoStyle.Render(watchLogo)
 	clock := tui.HelpStyle.Render(m.now.Format("15:04:05"))
-	if gap := m.width - lipgloss.Width(left) - lipgloss.Width(clock); m.width > 0 && gap > 1 {
-		return left + strings.Repeat(" ", gap) + clock
+	if gap := m.width - lipgloss.Width(logo) - lipgloss.Width(clock); m.width > 0 && gap > 1 {
+		return logo + strings.Repeat(" ", gap) + clock
 	}
-	return left + "   " + clock
+	return logo + "   " + clock
 }
 
-// table renders the aligned rows. Columns are ACTIVITY, [WORKFLOWS,] FOR,
-// ALIAS, NAME, TITLE; every column but TITLE is padded to its widest cell, and
+// table renders the aligned rows. Columns are ACTIVITY, NAME, ALIAS, FOR,
+// [WORKFLOWS,] TITLE; every column but TITLE is padded to its widest cell, and
 // TITLE is truncated to whatever width remains. The WORKFLOWS column collapses
 // entirely when no container is running any workflow, so the common case stays
 // narrow.
 func (m watchModel) table() string {
 	n := len(m.items)
 	type column struct {
-		header string
-		cells  []string
+		header   string
+		cells    []string
+		right    bool // right-align header and cells (for the numeric FOR column)
+		minWidth int  // floor on the column width, so it does not jitter frame to frame
 	}
-	act := column{header: "ACTIVITY", cells: make([]string, n)}
+	// The activity column has no header and shows only the status glyph (no word).
+	act := column{header: "", cells: make([]string, n)}
 	wf := column{header: "WORKFLOWS", cells: make([]string, n)}
-	forc := column{header: "FOR", cells: make([]string, n)}
-	alias := column{header: "ALIAS", cells: make([]string, n)}
+	// FOR is right-aligned and held at a fixed width so the columns after it do
+	// not shift as the durations tick and change length.
+	forc := column{header: "FOR", cells: make([]string, n), right: true, minWidth: watchForWidth}
+	alias := column{header: "", cells: make([]string, n)}
 	name := column{header: "NAME", cells: make([]string, n)}
 	titles := make([]string, n)
 
 	anyWf := false
 	for i, it := range m.items {
-		glyph, word, style := m.activityCell(it)
-		act.cells[i] = style.Render(glyph + " " + word)
+		glyph, style := m.activityCell(it)
+		act.cells[i] = style.Render(glyph)
 		if c := watchWorkflowCell(it, m.now); c != "" {
 			wf.cells[i] = c
 			anyWf = true
@@ -321,55 +360,68 @@ func (m watchModel) table() string {
 		titles[i] = it.Title
 	}
 
-	cols := []column{act}
+	cols := []column{act, name, alias, forc}
 	if anyWf {
-		cols = append(cols, wf)
+		cols = append(cols, wf) // after FOR, before the trailing TITLE
 	}
-	cols = append(cols, forc, alias, name)
 
 	widths := make([]int, len(cols))
 	for c := range cols {
-		widths[c] = lipgloss.Width(cols[c].header)
+		widths[c] = max(lipgloss.Width(cols[c].header), cols[c].minWidth)
 		for _, cell := range cols[c].cells {
 			widths[c] = max(widths[c], lipgloss.Width(cell))
 		}
 	}
 
 	const gap = 2
-	sep := strings.Repeat(" ", gap)
+	// sepAfter is the gap written after column c. The activity column is a lone
+	// glyph, so a single space after it reads better than the standard two; every
+	// other column (and the gap before TITLE) keeps the two-space gap.
+	sepAfter := func(c int) string {
+		if c == 0 {
+			return " "
+		}
+		return strings.Repeat(" ", gap)
+	}
 
-	// TITLE gets the leftover width after every fixed column plus the leading
-	// two-space indent.
+	// TITLE gets the leftover width after every fixed column plus its trailing
+	// gap and the leading two-space indent.
 	titleBudget := 0
 	if m.width > 0 {
 		used := 2
 		for c := range cols {
-			used += widths[c] + gap
+			used += widths[c] + len(sepAfter(c))
 		}
 		titleBudget = m.width - used
 	}
 
-	pad := func(s string, w int) string {
-		if d := w - lipgloss.Width(s); d > 0 {
-			return s + strings.Repeat(" ", d)
+	pad := func(s string, w int, right bool) string {
+		d := w - lipgloss.Width(s)
+		if d <= 0 {
+			return s
 		}
-		return s
+		if right {
+			return strings.Repeat(" ", d) + s
+		}
+		return s + strings.Repeat(" ", d)
 	}
 
 	var b strings.Builder
-	heads := make([]string, len(cols))
+	var head strings.Builder
 	for c := range cols {
-		heads[c] = pad(cols[c].header, widths[c])
+		head.WriteString(pad(cols[c].header, widths[c], cols[c].right))
+		head.WriteString(sepAfter(c))
 	}
+	head.WriteString("TITLE")
 	b.WriteString("  ")
-	b.WriteString(tui.HelpStyle.Render(strings.Join(heads, sep) + sep + "TITLE"))
+	b.WriteString(tui.HelpStyle.Render(head.String()))
 	b.WriteByte('\n')
 
 	for i := range m.items {
 		b.WriteString("  ")
 		for c := range cols {
-			b.WriteString(pad(cols[c].cells[i], widths[c]))
-			b.WriteString(sep)
+			b.WriteString(pad(cols[c].cells[i], widths[c], cols[c].right))
+			b.WriteString(sepAfter(c))
 		}
 		switch {
 		case titles[i] == "":
@@ -465,32 +517,38 @@ func watchWorkflowCell(it daemon.Item, now time.Time) string {
 	return strings.Join(parts, " ")
 }
 
-// activityCell returns the glyph, word, and style for a container's leading
-// cell. A ready container shows its live conversation activity (working spins);
-// any other container shows its lifecycle state (provisioning spins).
-func (m watchModel) activityCell(it daemon.Item) (string, string, lipgloss.Style) {
+// activityCell returns the glyph and style for a container's leading cell. A
+// ready container shows its live conversation activity (working spins); any
+// other container shows its lifecycle state (provisioning spins). Only the
+// symbol is shown — the status word is dropped from the table.
+func (m watchModel) activityCell(it daemon.Item) (string, lipgloss.Style) {
 	if it.Status == daemon.StatusReady {
 		glyph, style := activityLook(it.Activity)
 		if it.Activity == daemon.ActivityWorking {
 			glyph = watchSpinner[m.frame%len(watchSpinner)]
 		}
-		return glyph, string(it.Activity), style
+		return glyph, style
 	}
 
 	style := tui.StatusStyle(string(it.Status))
 	switch it.Status {
 	case daemon.StatusProvisioning:
-		return watchSpinner[m.frame%len(watchSpinner)], string(it.Status), style
+		return watchSpinner[m.frame%len(watchSpinner)], style
 	case daemon.StatusFailed:
-		return "✗", string(it.Status), style
+		return "✗", style
 	case daemon.StatusStopped:
-		return "▪", string(it.Status), style
+		return "▪", style
 	case daemon.StatusSessionEnded:
-		return "◌", string(it.Status), style
+		return "◌", style
 	default:
-		return "·", string(it.Status), style
+		return "·", style
 	}
 }
+
+// watchForWidth is the fixed width of the FOR column, sized for the widest
+// duration it prints ("59m59s"/"23h59m"), so shorter values right-align within
+// it and the columns after FOR never shift as the durations tick.
+const watchForWidth = 6
 
 // watchDuration is the FOR cell: how long the container has held its current
 // state. For a ready container that is the conversation activity's age; for any

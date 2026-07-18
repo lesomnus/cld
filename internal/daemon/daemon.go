@@ -241,6 +241,9 @@ type Daemon struct {
 	proxy    *proxyStore    // per-project opt-in to broker-proxy auth (see proxyStore)
 	broker   *broker.Broker // central subscription-auth broker (see internal/broker)
 
+	usage    *usageCache  // memoizes per-login usage (see usage.go)
+	usage_hc *http.Client // client for the usage endpoint; own timeout, not the broker's
+
 	base_ctx context.Context // long-lived; parents watcher/sync goroutines
 	wg       sync.WaitGroup  // tracks worker goroutines
 
@@ -276,6 +279,8 @@ func New(cfg *config.Config, cli *client.Client, log *slog.Logger) (*Daemon, err
 		sessions: &sessionStore{dir: filepath.Join(cfg.CacheDir, "sessions")},
 		proxy:    &proxyStore{dir: cfg.ProxyStateDir()},
 		broker:   broker.New(broker.FileStore{Path: cfg.BrokerCredentialsPath()}),
+		usage:    newUsageCache(),
+		usage_hc: &http.Client{Timeout: 30 * time.Second},
 		entries:  map[string]*entry{},
 	}, nil
 }
