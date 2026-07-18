@@ -466,10 +466,12 @@ func (d *Daemon) handle_set_credentials(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// by_name finds a tracked entry by its display name or its short alias. A
-// display-name match wins over an alias match, so the handle a user sees under
-// NAME always resolves to that same container even if it happens to equal
-// another container's alias.
+// by_name finds a tracked entry by its managed name, its short alias, or the
+// display label shown under NAME. The managed name wins over an alias, which
+// wins over a display label, so the unique handles always resolve to their own
+// container before the non-unique display label is consulted — and the label a
+// user sees under NAME still resolves even when it differs from both (a
+// namespaced project shows "cld" but is named "lesomnus-cld").
 func (d *Daemon) by_name(name string) *entry {
 	d.mu.Lock()
 	entries := make([]*entry, 0, len(d.entries))
@@ -485,6 +487,11 @@ func (d *Daemon) by_name(name string) *entry {
 	}
 	for _, e := range entries {
 		if e.snapshot().Alias == name {
+			return e
+		}
+	}
+	for _, e := range entries {
+		if e.snapshot().Display == name {
 			return e
 		}
 	}

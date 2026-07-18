@@ -53,8 +53,19 @@ const (
 
 // Item is the externally visible state of one provisioned devcontainer.
 type Item struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
+	ID string `json:"id"`
+	// Name is the container's stable managed identity: the source of the tmux
+	// session name (see devc.SessionName) used to find, attach to, and restore
+	// the session, and the primary handle resolved by `cld it`. It is derived
+	// from the full devcontainer.json "name" (or folder) and must stay stable
+	// across upgrades — a namespaced name like "lesomnus/cld" stays
+	// "lesomnus-cld" here so an already-running tmux session keeps matching.
+	Name string `json:"name"`
+	// Display is the user-facing label shown in `cld ls` and the tmux tab. It
+	// collapses a namespaced name to its last segment ("lesomnus/cld" -> "cld")
+	// for readability; unlike Name it carries no identity and is never used to
+	// address a session, so changing how it reads never orphans a session.
+	Display     string `json:"display,omitempty"`
 	Alias       string `json:"alias"`
 	LocalFolder string `json:"local_folder"`
 	Workspace   string `json:"workspace"`

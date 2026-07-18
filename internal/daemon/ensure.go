@@ -111,20 +111,29 @@ func (d *Daemon) ensure_(ctx context.Context, e *entry) error {
 	}
 
 	if e.item.Name == "" {
-		// Prefer the devcontainer.json "name"; fall back to the folder name.
-		// A namespaced name like "lesomnus/cld" collapses to its last segment
-		// so the tmux session and tab title read as "cld", not "lesomnus-cld".
+		// Name is the stable managed identity (it feeds the tmux session name),
+		// so it keeps the FULL devcontainer.json "name" — a namespaced
+		// "lesomnus/cld" stays "lesomnus-cld" so an already-running session keeps
+		// matching across upgrades. Display collapses it to the last segment for
+		// readability. Both fall back to the folder name.
+		name := devc.Slug(e.dev_name)
+		if name == "" {
+			name = devc.Slug(devc.DisplayName(local_folder))
+		}
+		if name == "" {
+			name = "devcontainer"
+		}
 		display := devc.Slug(devc.BaseName(e.dev_name))
 		if display == "" {
-			display = devc.Slug(devc.DisplayName(local_folder))
+			display = name
 		}
-		if display == "" {
-			display = "devcontainer"
-		}
-		e.item.Name = d.unique_name(id, display)
-		// A short handle for the container, derived from its name and kept
-		// unique across the fleet by appending a digest of the workspace path.
-		e.item.Alias = d.unique_alias(id, devc.Alias(display), local_folder)
+		e.item.Name = d.unique_name(id, name)
+		e.item.Display = display
+		// A short handle for the container, derived from the FULL name (not the
+		// collapsed display) so a namespaced "lesomnus/cld" yields the segment
+		// initials "lc" rather than "cld"; kept unique across the fleet by
+		// appending a digest of the workspace path.
+		e.item.Alias = d.unique_alias(id, devc.Alias(name), local_folder)
 		e.publish()
 	}
 
@@ -243,18 +252,26 @@ func (d *Daemon) mark_stopped(e *entry, labels map[string]string, local_folder s
 		if p := labels[devc.LabelConfigFile]; p != "" {
 			config_file, _ = os.ReadFile(p)
 		}
-		// Prefer the devcontainer.json "name"; fall back to the folder name.
-		// A namespaced name like "lesomnus/cld" collapses to its last segment
-		// so the tmux session and tab title read as "cld", not "lesomnus-cld".
-		display := devc.Slug(devc.BaseName(devc.ProjectName(config_file)))
-		if display == "" {
-			display = devc.Slug(devc.DisplayName(local_folder))
+		// Name keeps the full devcontainer.json "name" (stable identity); Display
+		// collapses it to the last segment for readability. Both fall back to the
+		// folder name. See ensure_ for why the two are kept separate.
+		project := devc.ProjectName(config_file)
+		name := devc.Slug(project)
+		if name == "" {
+			name = devc.Slug(devc.DisplayName(local_folder))
 		}
-		if display == "" {
-			display = "devcontainer"
+		if name == "" {
+			name = "devcontainer"
 		}
-		e.item.Name = d.unique_name(e.id, display)
-		e.item.Alias = d.unique_alias(e.id, devc.Alias(display), local_folder)
+		display := devc.Slug(devc.BaseName(project))
+		if display == "" {
+			display = name
+		}
+		e.item.Name = d.unique_name(e.id, name)
+		e.item.Display = display
+		// Alias from the FULL name (segment initials, e.g. "lc"), not the
+		// collapsed display. See ensure_.
+		e.item.Alias = d.unique_alias(e.id, devc.Alias(name), local_folder)
 	}
 	if e.item.Status != StatusSessionEnded {
 		e.item.Status = StatusStopped
@@ -752,6 +769,16 @@ func (d *Daemon) ensure_session(ctx context.Context, e *entry, id string) error 
 
 	if err := d.tmux.NewSession(ctx, name, command); err != nil {
 		return err
+	}
+	// The session name is the stable identity (kept full for a namespaced
+	// project), so point the window name — and thus the terminal tab — at the
+	// terse display label instead. Best-effort: a cosmetic tab name must not fail
+	// provisioning.
+	if tab := e.item.Display; tab != "" {
+		if err := d.tmux.SetWindowName(ctx, name, tab); err != nil {
+			d.log.Warn("set window name",
+				slog.String("name", name), slog.String("error", err.Error()))
+		}
 	}
 	// Bind the session's split/new-window keys to a shell inside this same
 	// container, so an extra pane lands in the container, not the host tmux

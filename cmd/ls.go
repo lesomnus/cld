@@ -52,7 +52,7 @@ func NewCmdLs() *xli.Command {
 				if it.Status == daemon.StatusReady {
 					activity = string(it.Activity)
 				}
-				rows[i] = []string{it.Name, it.Alias, id, string(it.Status), it.Version, abbreviate_home(it.LocalFolder), activity, it.Title}
+				rows[i] = []string{displayName(it), it.Alias, id, string(it.Status), it.Version, abbreviate_home(it.LocalFolder), activity, it.Title}
 			}
 
 			// --wide always prints every column as plain tab-separated text, no
@@ -127,6 +127,16 @@ var (
 	cardWorkingStyle = tui.TitleStyle
 )
 
+// displayName is the user-facing label for a container: the collapsed Display
+// when set, else the full managed Name. Older snapshots (and stopped entries
+// resolved before Display existed) may carry no Display, so Name is the fallback.
+func displayName(it daemon.Item) string {
+	if it.Display != "" {
+		return it.Display
+	}
+	return it.Name
+}
+
 // cardIdentityCells returns a card's first-line fields in display order —
 // alias, name, container, version, folder — each with its own style. The order
 // leads with the alias; widths are equalized across cards by renderLsCards.
@@ -143,7 +153,7 @@ func cardIdentityCells(it daemon.Item) []struct {
 		style lipgloss.Style
 	}{
 		{it.Alias, cardAliasStyle},
-		{it.Name, cardNameStyle},
+		{displayName(it), cardNameStyle},
 		{id, tui.HelpStyle},
 		{it.Version, tui.HelpStyle},
 		{abbreviate_home(it.LocalFolder), tui.HelpStyle},

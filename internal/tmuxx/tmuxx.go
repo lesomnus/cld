@@ -77,6 +77,17 @@ func (s *Server) tune(ctx context.Context) error {
 		return fmt.Errorf("tmux set mouse: %w: %s", err, out)
 	}
 
+	// Drive the outer terminal's tab/title from the window name, which
+	// SetWindowName sets to the container's terse display name. The session name
+	// is the stable identity (a namespaced project keeps its full name there), so
+	// the tab would otherwise read the long identity instead of the short label.
+	if out, err := s.run(ctx, "set-option", "-g", "set-titles", "on"); err != nil {
+		return fmt.Errorf("tmux set set-titles: %w: %s", err, out)
+	}
+	if out, err := s.run(ctx, "set-option", "-g", "set-titles-string", "#W"); err != nil {
+		return fmt.Errorf("tmux set set-titles-string: %w: %s", err, out)
+	}
+
 	if err := s.bindSplitKeys(ctx); err != nil {
 		return err
 	}
@@ -116,6 +127,27 @@ func (s *Server) bindSplitKeys(ctx context.Context) error {
 		if out, err := s.run(ctx, argv...); err != nil {
 			return fmt.Errorf("tmux bind-key %s: %w: %s", b[0], err, out)
 		}
+	}
+	return nil
+}
+
+// SetWindowName sets the name of a session's initial window and stops tmux from
+// renaming it afterwards, so the outer terminal tab (see set-titles-string in
+// tune) reads the terse display name rather than the session's full identity or
+// whatever command the pane happens to be running. automatic-rename blocks
+// tmux's own command-based renaming; allow-rename blocks the running program
+// (claude's TUI) from renaming the window via a title escape.
+func (s *Server) SetWindowName(ctx context.Context, session, name string) error {
+	// remain-on-exit's window ops target a plain session name (its active
+	// window); "=name" is a session target and is rejected for window ops.
+	if out, err := s.run(ctx, "set-window-option", "-t", session, "automatic-rename", "off"); err != nil {
+		return fmt.Errorf("tmux set automatic-rename: %w: %s", err, out)
+	}
+	if out, err := s.run(ctx, "set-window-option", "-t", session, "allow-rename", "off"); err != nil {
+		return fmt.Errorf("tmux set allow-rename: %w: %s", err, out)
+	}
+	if out, err := s.run(ctx, "rename-window", "-t", session, name); err != nil {
+		return fmt.Errorf("tmux rename-window: %w: %s", err, out)
 	}
 	return nil
 }

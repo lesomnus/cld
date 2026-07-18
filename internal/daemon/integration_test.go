@@ -723,6 +723,7 @@ func TestNameKeying(t *testing.T) {
 		Sync:     config.SyncConfig{Debounce: config.Duration(200 * time.Millisecond), FallbackInterval: config.Duration(time.Minute)},
 	}
 	self := build_cld(t)
+	tmux := &tmuxx.Server{Socket: cfg.TmuxSocketPath()}
 	t.Cleanup(func() { exec.Command("tmux", "-S", cfg.TmuxSocketPath(), "kill-server").Run() })
 
 	_, stop := start_daemon(t, cfg, cli, self)
@@ -739,14 +740,47 @@ func TestNameKeying(t *testing.T) {
 	ctr := run_devcontainer(t, cli, lf)
 	_ = ctr
 
+	// The managed name keeps the full namespaced identity ("acme-api"), so match
+	// on that — Display is what collapses to the last segment.
 	wait_for(t, 60*time.Second, "ready", func() bool {
-		it := find_item(must_items(t, cfg), "api")
+		it := find_item(must_items(t, cfg), "acme-api")
 		return it != nil && it.Status == StatusReady
 	})
 
+	t.Run("managed name keeps the full namespaced identity", func(t *testing.T) {
+		// Name feeds the tmux session name, so it must stay stable across
+		// upgrades: "acme/api" -> "acme-api", never collapsed to "api" (which
+		// would orphan an already-running session named for the full identity).
+		it := find_item(must_items(t, cfg), "acme-api")
+		require.NotNil(t, it)
+		require.Equal(t, "acme-api", it.Name)
+	})
 	t.Run("display name is the last segment of the devcontainer name", func(t *testing.T) {
-		// "acme/api" shows as "api" so the tmux session and tab title stay terse.
-		require.NotNil(t, find_item(must_items(t, cfg), "api"))
+		// "acme/api" shows as "api" so the listing and tmux tab stay terse, while
+		// the managed name underneath stays the full identity.
+		it := find_item(must_items(t, cfg), "acme-api")
+		require.NotNil(t, it)
+		require.Equal(t, "api", it.Display)
+	})
+	t.Run("alias is the full-name initials, not the collapsed display", func(t *testing.T) {
+		// "acme/api" -> full name "acme-api" -> initials "aa", not "api".
+		it := find_item(must_items(t, cfg), "acme-api")
+		require.NotNil(t, it)
+		require.Equal(t, "aa", it.Alias)
+	})
+	t.Run("tmux session keeps the full name but the window tab is terse", func(t *testing.T) {
+		// The session name is the stable identity, so it stays "acme-api"...
+		has, err := tmux.HasSession(t.Context(), devc.SessionName("acme-api"))
+		require.NoError(t, err)
+		require.True(t, has)
+		// ...while the window name (which drives the terminal tab via
+		// set-titles-string) reads the terse display label.
+		out, err := exec.Command(
+			"tmux", "-S", cfg.TmuxSocketPath(),
+			"display-message", "-p", "-t", devc.SessionName("acme-api"), "#W",
+		).Output()
+		require.NoError(t, err)
+		require.Equal(t, "api", strings.TrimSpace(string(out)))
 	})
 	t.Run("backup is keyed by the full name, not the path", func(t *testing.T) {
 		// Backups follow the full namespaced identity, so a sync must land under
