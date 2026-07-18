@@ -75,6 +75,54 @@ type Item struct {
 	// the pane on every listing and never stored, so there is no moment to mark.
 	StatusSince   time.Time `json:"status_since,omitzero"`
 	ActivitySince time.Time `json:"activity_since,omitzero"`
+	// Workflows are the Claude Code multi-agent workflow runs of the session's
+	// current transcript, derived by the daemon from the on-disk run journals
+	// (see refresh_workflows). Empty when the session has run none. Ordered
+	// newest-first by UpdatedAt.
+	Workflows []WorkflowRun `json:"workflows,omitempty"`
+}
+
+// WorkflowRun is the observable state of one Claude Code workflow run, read
+// from two on-disk sources with very different reliability:
+//
+//   - Progress (Total/Done) comes from the run journal,
+//     subagents/workflows/<run_id>/journal.jsonl, which appends one "started"
+//     line per fanned-out agent and one "result" line when that agent returns.
+//     The journal has NO timestamps and its format is internal/versioned ("v2:"
+//     keys), so it is parsed best-effort and only counted, never trusted for
+//     structure. It is the only source that exists while a run is still live.
+//
+//   - Finalization (Finalized/Status) comes from the run's state file,
+//     workflows/<run_id>.json, which Claude Code writes only when the run ENDS.
+//     Its presence is therefore an authoritative "no longer live" signal. Status
+//     is that file's own status word, read best-effort (the file is one big JSON
+//     line whose embedded script/results could hold look-alikes), so it is
+//     treated as advisory: only a recognized failure word ever changes how a
+//     finalized run is shown, and a misread degrades to "completed".
+type WorkflowRun struct {
+	RunID string `json:"run_id"`         // e.g. "wf_c310b23a-0d6"
+	Name  string `json:"name,omitempty"` // workflow meta.name, from the persisted script filename
+	Total int    `json:"total"`          // agents started (journal)
+	Done  int    `json:"done"`           // agents that returned a result (journal)
+	// Finalized is set once the run wrote its state file, i.e. it is no longer
+	// live. Status is that file's own status word ("completed", "failed", …),
+	// advisory and empty while a run is live or if it could not be read.
+	Finalized bool   `json:"finalized,omitempty"`
+	Status    string `json:"status,omitempty"`
+	// UpdatedAt is the freshest write time across the run's journal and its
+	// per-agent transcripts — the liveness signal for a run that has not
+	// finalized. The journal alone lags (it advances only on agent start/return,
+	// so a long single agent leaves it quiet), so a run's agent files count too.
+	UpdatedAt time.Time `json:"updated_at,omitzero"`
+}
+
+// Running is the number of a run's agents that started but have not yet
+// returned a result.
+func (w WorkflowRun) Running() int {
+	if n := w.Total - w.Done; n > 0 {
+		return n
+	}
+	return 0
 }
 
 // entry is one container's state. Every mutable field except the published

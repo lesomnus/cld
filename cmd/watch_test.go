@@ -45,3 +45,94 @@ func TestWatchDuration(t *testing.T) {
 		require.Equal(t, "0s", watchDuration(it, now))
 	})
 }
+
+func TestWatchWorkflowCell(t *testing.T) {
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+
+	t.Run("no workflows collapses to empty", func(t *testing.T) {
+		require.Equal(t, "", watchWorkflowCell(daemon.Item{}, now))
+	})
+
+	t.Run("live, aborted, and completed runs are tallied", func(t *testing.T) {
+		it := daemon.Item{Workflows: []daemon.WorkflowRun{
+			{RunID: "wf_live", Total: 5, Done: 2, UpdatedAt: now.Add(-10 * time.Second)},
+			{RunID: "wf_ok1", Total: 4, Done: 4, Finalized: true, Status: "completed"},
+			{RunID: "wf_ok2", Total: 3, Done: 3, Finalized: true, Status: "completed"},
+			{RunID: "wf_abort", Total: 4, Done: 3, Finalized: true},
+		}}
+		cell := watchWorkflowCell(it, now)
+		require.Contains(t, cell, "▶1 2/5") // one live run, 2 of 5 agents done
+		require.Contains(t, cell, "⚠1")     // one aborted run
+		require.Contains(t, cell, "✓2")     // two completed runs
+	})
+
+	t.Run("a finalized run is never counted live even with a fresh mtime", func(t *testing.T) {
+		it := daemon.Item{Workflows: []daemon.WorkflowRun{
+			{RunID: "wf_x", Total: 5, Done: 2, Finalized: true, UpdatedAt: now},
+		}}
+		cell := watchWorkflowCell(it, now)
+		require.NotContains(t, cell, "▶")
+		require.Contains(t, cell, "⚠1")
+	})
+
+	t.Run("a not-finalized run gone quiet is treated as crashed, not live", func(t *testing.T) {
+		it := daemon.Item{Workflows: []daemon.WorkflowRun{
+			{RunID: "wf_stale", Total: 5, Done: 2, UpdatedAt: now.Add(-10 * time.Minute)},
+		}}
+		cell := watchWorkflowCell(it, now)
+		require.NotContains(t, cell, "▶")
+		require.Contains(t, cell, "⚠1")
+	})
+
+	t.Run("a live run momentarily balanced is still live, not completed", func(t *testing.T) {
+		// A sequential workflow between phases: every started agent returned,
+		// the next has not launched, and no state file exists yet.
+		it := daemon.Item{Workflows: []daemon.WorkflowRun{
+			{RunID: "wf_seq", Total: 3, Done: 3, Finalized: false, UpdatedAt: now.Add(-2 * time.Second)},
+		}}
+		cell := watchWorkflowCell(it, now)
+		require.Contains(t, cell, "▶1 3/3")
+		require.NotContains(t, cell, "✓")
+	})
+
+	t.Run("a finalized failure is a problem, not a completion", func(t *testing.T) {
+		it := daemon.Item{Workflows: []daemon.WorkflowRun{
+			{RunID: "wf_fail", Total: 3, Done: 3, Finalized: true, Status: "failed"},
+		}}
+		cell := watchWorkflowCell(it, now)
+		require.Contains(t, cell, "⚠1")
+		require.NotContains(t, cell, "✓")
+	})
+
+	t.Run("a finalized run with an unread status defaults to completed", func(t *testing.T) {
+		it := daemon.Item{Workflows: []daemon.WorkflowRun{
+			{RunID: "wf_unknown", Total: 3, Done: 3, Finalized: true, Status: ""},
+		}}
+		require.Contains(t, watchWorkflowCell(it, now), "✓1")
+	})
+}
+
+func TestClassifyWorkflowRun(t *testing.T) {
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	fresh := now.Add(-3 * time.Second)
+	stale := now.Add(-10 * time.Minute)
+
+	cases := []struct {
+		name string
+		run  daemon.WorkflowRun
+		want workflowBucket
+	}{
+		{"live in-flight", daemon.WorkflowRun{Total: 5, Done: 2, UpdatedAt: fresh}, workflowLive},
+		{"live but balanced", daemon.WorkflowRun{Total: 3, Done: 3, UpdatedAt: fresh}, workflowLive},
+		{"empty just-started journal", daemon.WorkflowRun{Total: 0, Done: 0, UpdatedAt: fresh}, workflowLive},
+		{"crashed before finalize", daemon.WorkflowRun{Total: 5, Done: 2, UpdatedAt: stale}, workflowProblem},
+		{"completed", daemon.WorkflowRun{Total: 4, Done: 4, Finalized: true, Status: "completed"}, workflowDone},
+		{"completed unknown status", daemon.WorkflowRun{Total: 4, Done: 4, Finalized: true}, workflowDone},
+		{"finalized failure", daemon.WorkflowRun{Total: 4, Done: 4, Finalized: true, Status: "failed"}, workflowProblem},
+		{"finalized with orphan", daemon.WorkflowRun{Total: 4, Done: 3, Finalized: true}, workflowProblem},
+		{"finalized fresh mtime never live", daemon.WorkflowRun{Total: 5, Done: 2, Finalized: true, UpdatedAt: now}, workflowProblem},
+	}
+	for _, tc := range cases {
+		require.Equal(t, tc.want, classifyWorkflowRun(tc.run, now), tc.name)
+	}
+}

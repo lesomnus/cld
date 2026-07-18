@@ -32,6 +32,17 @@ func DisplayName(local_folder string) string {
 	return filepath.Base(filepath.Clean(local_folder))
 }
 
+// BaseName returns the last "/"-separated segment of a devcontainer name, so a
+// namespaced name like "lesomnus/cld" is displayed as just "cld". A name with
+// no "/" is returned unchanged, and leading/trailing slashes are ignored.
+func BaseName(name string) string {
+	name = strings.Trim(name, "/")
+	if i := strings.LastIndexByte(name, '/'); i >= 0 {
+		return name[i+1:]
+	}
+	return name
+}
+
 // ProjectName returns the "name" field from a devcontainer.json, or "" if it
 // is absent or the document cannot be parsed.
 func ProjectName(config_file []byte) string {

@@ -25,6 +25,23 @@ func TestSessionName(t *testing.T) {
 	})
 }
 
+func TestBaseName(t *testing.T) {
+	t.Run("keeps a name without a slash", func(t *testing.T) {
+		require.Equal(t, "cld", devc.BaseName("cld"))
+	})
+	t.Run("takes the last segment of a namespaced name", func(t *testing.T) {
+		require.Equal(t, "cld", devc.BaseName("lesomnus/cld"))
+		require.Equal(t, "c", devc.BaseName("a/b/c"))
+	})
+	t.Run("ignores leading and trailing slashes", func(t *testing.T) {
+		require.Equal(t, "cld", devc.BaseName("/lesomnus/cld/"))
+		require.Equal(t, "", devc.BaseName("///"))
+	})
+	t.Run("empty stays empty", func(t *testing.T) {
+		require.Equal(t, "", devc.BaseName(""))
+	})
+}
+
 func TestProjectName(t *testing.T) {
 	t.Run("reads name", func(t *testing.T) {
 		require.Equal(t, "lesomnus/cld", devc.ProjectName([]byte(`{

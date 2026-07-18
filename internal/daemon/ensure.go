@@ -112,7 +112,9 @@ func (d *Daemon) ensure_(ctx context.Context, e *entry) error {
 
 	if e.item.Name == "" {
 		// Prefer the devcontainer.json "name"; fall back to the folder name.
-		display := devc.Slug(e.dev_name)
+		// A namespaced name like "lesomnus/cld" collapses to its last segment
+		// so the tmux session and tab title read as "cld", not "lesomnus-cld".
+		display := devc.Slug(devc.BaseName(e.dev_name))
 		if display == "" {
 			display = devc.Slug(devc.DisplayName(local_folder))
 		}
@@ -209,6 +211,8 @@ func (d *Daemon) ensure_(ctx context.Context, e *entry) error {
 	// Seed the conversation title from any resumed transcript so a listing shows
 	// it immediately, without waiting for the first transcript change to sync.
 	d.refresh_title(ctx, e)
+	// Likewise seed workflow-run state from a resumed session's journals.
+	d.refresh_workflows(ctx, e)
 	// Seed the initial conversation activity before claude's first hook fires, so
 	// a just-ready push container is never blank: idle with no conversation yet,
 	// waiting once a resumed transcript gave it a title. Non-push containers keep
@@ -240,7 +244,9 @@ func (d *Daemon) mark_stopped(e *entry, labels map[string]string, local_folder s
 			config_file, _ = os.ReadFile(p)
 		}
 		// Prefer the devcontainer.json "name"; fall back to the folder name.
-		display := devc.Slug(devc.ProjectName(config_file))
+		// A namespaced name like "lesomnus/cld" collapses to its last segment
+		// so the tmux session and tab title read as "cld", not "lesomnus-cld".
+		display := devc.Slug(devc.BaseName(devc.ProjectName(config_file)))
 		if display == "" {
 			display = devc.Slug(devc.DisplayName(local_folder))
 		}
@@ -281,6 +287,10 @@ func (d *Daemon) stop(ctx context.Context, e *entry) {
 	// the container restarts, instead of the next generation inheriting a stale
 	// "working"/"waiting" that only a completed turn's hook would correct.
 	e.item.Activity = ""
+	// Likewise drop the workflow runs — they belong to the dead session and
+	// none are live now; a restart re-seeds them from disk. (copy_out above may
+	// have just refreshed them, so clear after it.)
+	e.item.Workflows = nil
 	e.publish()
 	d.log.Info("stopped", slog.String("id", short(e.id)), slog.String("name", e.item.Name))
 }

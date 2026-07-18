@@ -11,6 +11,8 @@ import (
 	"io"
 	"log/slog"
 	"path"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -148,9 +150,12 @@ func (d *Daemon) copy_out(ctx context.Context, e *entry, p dirty) {
 	}
 
 	// A transcript change is the only thing that can move the conversation
-	// title, so re-read it here (still on the worker) and republish.
+	// title or the workflow-run state, so re-read both here (still on the
+	// worker) and republish. Workflow journals live under projects/ too, so the
+	// same transcript-dirty signal already covers their writes.
 	if p.transcript {
 		d.refresh_title(ctx, e)
+		d.refresh_workflows(ctx, e)
 	}
 }
 
@@ -186,6 +191,135 @@ func (d *Daemon) refresh_title(ctx context.Context, e *entry) {
 	}
 	e.item.Title = rec.Title
 	e.publish()
+}
+
+// refresh_workflows reads the state of the session's Claude Code workflow runs
+// from their on-disk journals and caches it on the entry for listings. Like
+// refresh_title it runs on the worker (race-free publish) and is best-effort:
+// the run-journal format is internal to Claude Code, so any parse miss just
+// leaves the previous value in place rather than dropping the whole listing.
+//
+// One shell pass emits a tab-separated line per run —
+// "<run_id> <started> <result> <mtime> <name>" — for the current session (the
+// newest transcript, the same one refresh_title reads). Runs live under
+// <session>/subagents/workflows/wf_*/, and each run's script, persisted as
+// "<meta.name>-<run_id>.js" under <session>/workflows/scripts, is where the
+// human-readable name comes from. Counting is a plain grep: the journal writes
+// one {"type":"started"} per fanned-out agent and one {"type":"result"} when it
+// returns, with no run-level record.
+func (d *Daemon) refresh_workflows(ctx context.Context, e *entry) {
+	enc := claude.EncodeProjectPath(e.item.Workspace)
+	dir := path.Join(e.cfg_dir, "projects", enc)
+	// Per run, emit a tab-separated line:
+	//   run_id  started  result  updated_mtime  finalized  status  name
+	//
+	//   - started/result: line counts of the journal's own record types. The
+	//     match is anchored at "^{" so a "type":"started" appearing INSIDE a
+	//     result record's nested payload (a real case when a workflow's agents
+	//     discuss journal formats) is not miscounted — the record's own type is
+	//     always the first key. Mirrors refresh_title's anchored ai-title grep.
+	//   - updated_mtime: the freshest of the journal's mtime and the newest
+	//     per-agent transcript's mtime. The journal lags (it only moves on agent
+	//     start/return), so a run with one long agent would look stale from the
+	//     journal alone while its agent file is actively written.
+	//   - finalized: whether the run wrote its state file — an authoritative
+	//     "no longer live" signal, taken from the file's mere existence.
+	//   - status: the state file's status word, best-effort via grep -o (no jq
+	//     in the container). Advisory only, so a wrong grab cannot mislabel a
+	//     live run — the reader treats an unrecognized value as "completed".
+	//   - name: the run's meta.name, recovered from its persisted script's
+	//     filename "<name>-<run_id>.js" (reliable; emitted last so a name with
+	//     spaces cannot break the column split).
+	script := `d=` + tmuxx.Quote(dir) + `; ` +
+		`s=$(ls -t "$d"/*.jsonl 2>/dev/null | head -1); [ -n "$s" ] || exit 0; ` +
+		`s=$(basename "$s" .jsonl); wd="$d/$s/workflows"; ` +
+		`for j in "$d/$s/subagents/workflows"/wf_*/journal.jsonl; do ` +
+		`[ -f "$j" ] || continue; ` +
+		`dir=$(dirname "$j"); r=$(basename "$dir"); ` +
+		`st=$(grep -c '^{"type":"started"' "$j"); ` +
+		`re=$(grep -c '^{"type":"result"' "$j"); ` +
+		`mt=$(stat -c %Y "$j" 2>/dev/null || echo 0); ` +
+		`am=$(ls -t "$dir"/agent-*.jsonl 2>/dev/null | head -1); ` +
+		`if [ -n "$am" ]; then amt=$(stat -c %Y "$am" 2>/dev/null || echo 0); [ "$amt" -gt "$mt" ] && mt=$amt; fi; ` +
+		`sf="$wd/$r.json"; fin=0; status=""; ` +
+		`if [ -f "$sf" ]; then fin=1; ` +
+		`status=$(grep -o '"status":"[^"]*"' "$sf" | head -1 | sed 's/.*:"//;s/"$//'); fi; ` +
+		`nm=""; for f in "$wd/scripts/"*-"$r".js; do ` +
+		`[ -f "$f" ] && nm=$(basename "$f" .js) && nm=${nm%-"$r"} && break; done; ` +
+		`printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$r" "$st" "$re" "$mt" "$fin" "$status" "$nm"; ` +
+		`done`
+	out, _, err := dockerx.ExecOutput(ctx, d.cli, e.id, e.user, []string{"sh", "-c", script})
+	if err != nil {
+		return
+	}
+	runs := parseWorkflowRuns(out)
+	if workflowRunsEqual(e.item.Workflows, runs) {
+		return
+	}
+	e.item.Workflows = runs
+	e.publish()
+}
+
+// parseWorkflowRuns turns refresh_workflows' tab-separated output into runs,
+// ordered newest-first. A malformed line is skipped, never fatal. Fields after
+// the first four are optional (a live run has no state file), so a short line
+// still yields a valid run with just its progress counts.
+func parseWorkflowRuns(out string) []WorkflowRun {
+	var runs []WorkflowRun
+	for line := range strings.SplitSeq(out, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == "" {
+			continue
+		}
+		f := strings.Split(line, "\t")
+		if len(f) < 4 || f[0] == "" {
+			continue
+		}
+		total, err1 := strconv.Atoi(strings.TrimSpace(f[1]))
+		done, err2 := strconv.Atoi(strings.TrimSpace(f[2]))
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		run := WorkflowRun{RunID: f[0], Total: total, Done: done}
+		if mt, err := strconv.ParseInt(strings.TrimSpace(f[3]), 10, 64); err == nil && mt > 0 {
+			run.UpdatedAt = time.Unix(mt, 0)
+		}
+		if len(f) >= 5 {
+			run.Finalized = strings.TrimSpace(f[4]) == "1"
+		}
+		if len(f) >= 6 {
+			run.Status = strings.TrimSpace(f[5])
+		}
+		if len(f) >= 7 {
+			run.Name = strings.TrimSpace(f[6])
+		}
+		runs = append(runs, run)
+	}
+	sort.Slice(runs, func(i, j int) bool {
+		if !runs[i].UpdatedAt.Equal(runs[j].UpdatedAt) {
+			return runs[i].UpdatedAt.After(runs[j].UpdatedAt)
+		}
+		return runs[i].RunID < runs[j].RunID
+	})
+	return runs
+}
+
+// workflowRunsEqual reports whether two run slices are identical, used to skip a
+// republish when nothing changed. Time fields are compared with Equal rather
+// than == so the check never depends on a monotonic/location quirk.
+func workflowRunsEqual(a, b []WorkflowRun) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].RunID != b[i].RunID || a[i].Name != b[i].Name ||
+			a[i].Total != b[i].Total || a[i].Done != b[i].Done ||
+			a[i].Finalized != b[i].Finalized || a[i].Status != b[i].Status ||
+			!a[i].UpdatedAt.Equal(b[i].UpdatedAt) {
+			return false
+		}
+	}
+	return true
 }
 
 // watch_container keeps an in-container watcher exec alive and feeds its

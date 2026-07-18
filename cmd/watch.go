@@ -88,7 +88,9 @@ type watchModel struct {
 }
 
 func newWatchModel(ctx context.Context, socket string, interval time.Duration) watchModel {
-	return watchModel{ctx: ctx, socket: socket, interval: interval}
+	// Seed now so the very first frame — drawn before the first tick — shows a
+	// real clock and real durations instead of the zero time.
+	return watchModel{ctx: ctx, socket: socket, interval: interval, now: time.Now()}
 }
 
 type watchItemsMsg struct {
@@ -233,32 +235,63 @@ func (m watchModel) header() string {
 	return left + "   " + clock
 }
 
-// table renders the aligned rows. Columns are ACTIVITY, FOR, ALIAS, NAME,
-// TITLE; every column but TITLE is padded to its widest cell, and TITLE is
-// truncated to whatever width remains.
+// table renders the aligned rows. Columns are ACTIVITY, [WORKFLOWS,] FOR,
+// ALIAS, NAME, TITLE; every column but TITLE is padded to its widest cell, and
+// TITLE is truncated to whatever width remains. The WORKFLOWS column collapses
+// entirely when no container is running any workflow, so the common case stays
+// narrow.
 func (m watchModel) table() string {
-	type cell struct {
-		act, forr, alias, name, title string
+	n := len(m.items)
+	type column struct {
+		header string
+		cells  []string
 	}
-	cells := make([]cell, len(m.items))
-	wAct, wFor, wAlias, wName := lipgloss.Width("ACTIVITY"), lipgloss.Width("FOR"), lipgloss.Width("ALIAS"), lipgloss.Width("NAME")
+	act := column{header: "ACTIVITY", cells: make([]string, n)}
+	wf := column{header: "WORKFLOWS", cells: make([]string, n)}
+	forc := column{header: "FOR", cells: make([]string, n)}
+	alias := column{header: "ALIAS", cells: make([]string, n)}
+	name := column{header: "NAME", cells: make([]string, n)}
+	titles := make([]string, n)
+
+	anyWf := false
 	for i, it := range m.items {
 		glyph, word, style := m.activityCell(it)
-		act := style.Render(glyph + " " + word)
-		forr := watchDuration(it, m.now)
-		cells[i] = cell{act: act, forr: forr, alias: it.Alias, name: it.Name, title: it.Title}
-		wAct = max(wAct, lipgloss.Width(act))
-		wFor = max(wFor, lipgloss.Width(forr))
-		wAlias = max(wAlias, lipgloss.Width(it.Alias))
-		wName = max(wName, lipgloss.Width(it.Name))
+		act.cells[i] = style.Render(glyph + " " + word)
+		if c := watchWorkflowCell(it, m.now); c != "" {
+			wf.cells[i] = c
+			anyWf = true
+		}
+		forc.cells[i] = tui.HelpStyle.Render(watchDuration(it, m.now))
+		alias.cells[i] = cardAliasStyle.Render(it.Alias)
+		name.cells[i] = it.Name
+		titles[i] = it.Title
 	}
 
-	// TITLE gets the leftover width. gap is the two-space separator between
-	// each of the five columns.
+	cols := []column{act}
+	if anyWf {
+		cols = append(cols, wf)
+	}
+	cols = append(cols, forc, alias, name)
+
+	widths := make([]int, len(cols))
+	for c := range cols {
+		widths[c] = lipgloss.Width(cols[c].header)
+		for _, cell := range cols[c].cells {
+			widths[c] = max(widths[c], lipgloss.Width(cell))
+		}
+	}
+
 	const gap = 2
+	sep := strings.Repeat(" ", gap)
+
+	// TITLE gets the leftover width after every fixed column plus the leading
+	// two-space indent.
 	titleBudget := 0
 	if m.width > 0 {
-		used := 2 + wAct + gap + wFor + gap + wAlias + gap + wName + gap // 2 = leading indent
+		used := 2
+		for c := range cols {
+			used += widths[c] + gap
+		}
 		titleBudget = m.width - used
 	}
 
@@ -268,36 +301,114 @@ func (m watchModel) table() string {
 		}
 		return s
 	}
-	sep := strings.Repeat(" ", gap)
 
 	var b strings.Builder
-	head := "  " + tui.HelpStyle.Render(
-		pad("ACTIVITY", wAct)+sep+pad("FOR", wFor)+sep+pad("ALIAS", wAlias)+sep+pad("NAME", wName)+sep+"TITLE")
-	b.WriteString(head)
+	heads := make([]string, len(cols))
+	for c := range cols {
+		heads[c] = pad(cols[c].header, widths[c])
+	}
+	b.WriteString("  ")
+	b.WriteString(tui.HelpStyle.Render(strings.Join(heads, sep) + sep + "TITLE"))
 	b.WriteByte('\n')
 
-	for _, c := range cells {
-		title := c.title
-		if title == "" {
-			title = tui.HelpStyle.Render("—")
-		} else if titleBudget > 0 {
-			title = tui.HelpStyle.Render(watchTruncate(title, titleBudget))
-		} else {
-			title = tui.HelpStyle.Render(title)
-		}
+	for i := range m.items {
 		b.WriteString("  ")
-		b.WriteString(pad(c.act, wAct))
-		b.WriteString(sep)
-		b.WriteString(pad(tui.HelpStyle.Render(c.forr), wFor))
-		b.WriteString(sep)
-		b.WriteString(pad(cardAliasStyle.Render(c.alias), wAlias))
-		b.WriteString(sep)
-		b.WriteString(pad(c.name, wName))
-		b.WriteString(sep)
-		b.WriteString(title)
+		for c := range cols {
+			b.WriteString(pad(cols[c].cells[i], widths[c]))
+			b.WriteString(sep)
+		}
+		switch {
+		case titles[i] == "":
+			b.WriteString(tui.HelpStyle.Render("—"))
+		case m.width <= 0:
+			// Width unknown (piped output): render the full title and let the
+			// consumer wrap it.
+			b.WriteString(tui.HelpStyle.Render(titles[i]))
+		case titleBudget > 0:
+			b.WriteString(tui.HelpStyle.Render(watchTruncate(titles[i], titleBudget)))
+		default:
+			// Width known but the fixed columns already fill it: omit the title
+			// rather than render it full and overflow the row further.
+		}
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+// watchWorkflowStale is how long a not-yet-finalized run's newest write may sit
+// idle before it is treated as crashed rather than live. It only gates runs
+// with no state file (a finalized run is classified authoritatively), and is
+// generous because a single long agent can leave a run quiet mid-flight.
+const watchWorkflowStale = 5 * time.Minute
+
+type workflowBucket int
+
+const (
+	workflowDone    workflowBucket = iota // finished cleanly (or finalized, no failure)
+	workflowLive                          // still running
+	workflowProblem                       // aborted, failed, or crashed
+)
+
+// workflowFailureStatus is the set of state-file status words that mark a
+// finalized run as unsuccessful. Anything else (including an unread/empty
+// status) is taken as success, so a best-effort status misread never turns a
+// good run red.
+var workflowFailureStatus = map[string]bool{
+	"failed": true, "error": true, "errored": true,
+	"cancelled": true, "canceled": true, "aborted": true,
+}
+
+// classifyWorkflowRun decides how a single run should be shown. It trusts the
+// state file first: a finalized run is never "live", even if its files were
+// touched a moment ago. Only a run with no state file whose newest write is
+// recent is live — which correctly keeps a sequential workflow that is momentarily
+// balanced (every started agent has returned, next not launched yet) out of the
+// "done" bucket it would otherwise fall into.
+func classifyWorkflowRun(w daemon.WorkflowRun, now time.Time) workflowBucket {
+	if w.Finalized {
+		if w.Running() > 0 || workflowFailureStatus[w.Status] {
+			return workflowProblem // orphaned agents, or an explicit failure status
+		}
+		return workflowDone
+	}
+	if !w.UpdatedAt.IsZero() && now.Sub(w.UpdatedAt) < watchWorkflowStale {
+		return workflowLive
+	}
+	return workflowProblem // no state file and gone quiet: crashed mid-run
+}
+
+// watchWorkflowCell summarizes a container's workflow runs: live runs with
+// their agent progress, then any failed/stalled runs, then a tally of completed
+// ones. Empty when the container has run no workflows, which collapses the
+// column.
+func watchWorkflowCell(it daemon.Item, now time.Time) string {
+	if len(it.Workflows) == 0 {
+		return ""
+	}
+	var live, problem, done, agDone, agTotal int
+	for _, w := range it.Workflows {
+		switch classifyWorkflowRun(w, now) {
+		case workflowLive:
+			live++
+			agDone += w.Done
+			agTotal += w.Total
+		case workflowProblem:
+			problem++
+		default:
+			done++
+		}
+	}
+	parts := make([]string, 0, 3)
+	if live > 0 {
+		parts = append(parts, cardWorkingStyle.Render(fmt.Sprintf("▶%d %d/%d", live, agDone, agTotal)))
+	}
+	if problem > 0 {
+		parts = append(parts, tui.StatusStyle("failed").Render(fmt.Sprintf("⚠%d", problem)))
+	}
+	if done > 0 {
+		parts = append(parts, tui.HelpStyle.Render(fmt.Sprintf("✓%d", done)))
+	}
+	return strings.Join(parts, " ")
 }
 
 // activityCell returns the glyph, word, and style for a container's leading

@@ -740,15 +740,17 @@ func TestNameKeying(t *testing.T) {
 	_ = ctr
 
 	wait_for(t, 60*time.Second, "ready", func() bool {
-		it := find_item(must_items(t, cfg), "acme-api")
+		it := find_item(must_items(t, cfg), "api")
 		return it != nil && it.Status == StatusReady
 	})
 
-	t.Run("display name is the slugged devcontainer name", func(t *testing.T) {
-		require.NotNil(t, find_item(must_items(t, cfg), "acme-api"))
+	t.Run("display name is the last segment of the devcontainer name", func(t *testing.T) {
+		// "acme/api" shows as "api" so the tmux session and tab title stay terse.
+		require.NotNil(t, find_item(must_items(t, cfg), "api"))
 	})
-	t.Run("backup is keyed by the name, not the path", func(t *testing.T) {
-		// A sync must land under projects/cld-acme-api/, not a path hash.
+	t.Run("backup is keyed by the full name, not the path", func(t *testing.T) {
+		// Backups follow the full namespaced identity, so a sync must land under
+		// projects/cld-acme-api/ even though the display name is just "api".
 		_, _, err := dockerx.ExecOutput(t.Context(), cli, ctr, "", []string{
 			"sh", "-c",
 			`mkdir -p /root/.cld/claude/projects/-workspace` +
