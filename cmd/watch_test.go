@@ -136,3 +136,34 @@ func TestClassifyWorkflowRun(t *testing.T) {
 		require.Equal(t, tc.want, classifyWorkflowRun(tc.run, now), tc.name)
 	}
 }
+
+func TestWatchFinishedTurn(t *testing.T) {
+	m := newWatchModel(t.Context(), "", time.Second)
+
+	working := daemon.Item{ID: "a", Activity: daemon.ActivityWorking}
+	waiting := daemon.Item{ID: "a", Activity: daemon.ActivityWaiting}
+
+	t.Run("first sight never rings", func(t *testing.T) {
+		require.False(t, m.finishedTurn([]daemon.Item{working}))
+	})
+	t.Run("working→waiting rings once", func(t *testing.T) {
+		require.True(t, m.finishedTurn([]daemon.Item{waiting}))
+	})
+	t.Run("staying waiting does not re-ring", func(t *testing.T) {
+		require.False(t, m.finishedTurn([]daemon.Item{waiting}))
+	})
+	t.Run("working→working does not ring", func(t *testing.T) {
+		require.False(t, m.finishedTurn([]daemon.Item{working}))
+		require.False(t, m.finishedTurn([]daemon.Item{working}))
+	})
+	t.Run("a departed then returning container is first-seen again", func(t *testing.T) {
+		require.False(t, m.finishedTurn(nil))               // "a" leaves
+		require.False(t, m.finishedTurn([]daemon.Item{waiting})) // returns idle-at-prompt, no prior
+	})
+	t.Run("only the transitioning container matters", func(t *testing.T) {
+		b1 := daemon.Item{ID: "b", Activity: daemon.ActivityWorking}
+		require.False(t, m.finishedTurn([]daemon.Item{waiting, b1}))
+		b2 := daemon.Item{ID: "b", Activity: daemon.ActivityWaiting}
+		require.True(t, m.finishedTurn([]daemon.Item{waiting, b2}))
+	})
+}

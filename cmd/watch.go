@@ -41,6 +41,10 @@ func NewCmdWatch() *xli.Command {
 				Brief:   "how often to poll the daemon (e.g. 500ms, 2s)",
 				Default: &interval,
 			},
+			&flg.Switch{
+				Name:  "no-bell",
+				Brief: "do not ring the terminal bell when a container finishes (working→waiting); the bell is on by default",
+			},
 		},
 		Handler: xli.OnRun(func(ctx context.Context, cmd *xli.Command, next xli.Next) error {
 			c := use_config.Must(ctx)
@@ -48,8 +52,13 @@ func NewCmdWatch() *xli.Command {
 			if iv <= 0 {
 				iv = time.Second
 			}
+			// The bell is on by default; --no-bell (absent → false via Get) turns
+			// it off. Get, not MustGet, so an absent switch reads false rather
+			// than panicking on the missing default.
+			noBell, _ := flg.Get[bool](cmd, "no-bell")
 
 			m := newWatchModel(ctx, c.SocketPath(), iv)
+			m.bell = !noBell
 
 			// Without a terminal there is nothing to animate and no keys to
 			// read, so print a single frame and return instead of hanging on a
@@ -81,6 +90,13 @@ type watchModel struct {
 	err    error
 	loaded bool
 
+	// bell rings the terminal bell when a container transitions working→waiting.
+	// prevAct remembers each container's last-seen activity (keyed by ID) so a
+	// fetch can detect that transition; it is a reference type, so it survives
+	// the value-copy the tea.Model contract makes on every Update.
+	bell    bool
+	prevAct map[string]daemon.Activity
+
 	now    time.Time
 	frame  int
 	width  int
@@ -90,7 +106,38 @@ type watchModel struct {
 func newWatchModel(ctx context.Context, socket string, interval time.Duration) watchModel {
 	// Seed now so the very first frame — drawn before the first tick — shows a
 	// real clock and real durations instead of the zero time.
-	return watchModel{ctx: ctx, socket: socket, interval: interval, now: time.Now()}
+	return watchModel{
+		ctx: ctx, socket: socket, interval: interval, now: time.Now(),
+		prevAct: map[string]daemon.Activity{},
+	}
+}
+
+// finishedTurn reports whether any container went from working to waiting
+// between the previously seen activities and items, and records the new
+// activities for the next comparison. A container first seen (no prior entry)
+// never counts, so startup does not ring for already-idle sessions.
+func (m watchModel) finishedTurn(items []daemon.Item) bool {
+	rang := false
+	for _, it := range items {
+		if m.prevAct[it.ID] == daemon.ActivityWorking && it.Activity == daemon.ActivityWaiting {
+			rang = true
+		}
+	}
+	// Reset to exactly the current set so a departed container's stale state
+	// cannot linger and a returning one is treated as first-seen.
+	clear(m.prevAct)
+	for _, it := range items {
+		m.prevAct[it.ID] = it.Activity
+	}
+	return rang
+}
+
+// ringBell writes a BEL to the terminal (stderr, so it is untouched by the
+// alt-screen render on stdout). Over tmux/SSH it reaches the outer terminal,
+// which turns it into an audible or visual alert per the user's config.
+func ringBell() tea.Msg {
+	fmt.Fprint(os.Stderr, "\a")
+	return nil
 }
 
 type watchItemsMsg struct {
@@ -136,10 +183,17 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.frame++
 		return m, watchTick()
 	case watchItemsMsg:
+		// Detect working→waiting transitions before replacing the item set, and
+		// ring the bell (if enabled) alongside scheduling the next poll.
+		finished := m.finishedTurn(msg.items)
 		m.items, m.err, m.loaded = msg.items, msg.err, true
 		// Schedule the next poll relative to this reply so a slow daemon can
 		// never stack overlapping fetches.
-		return m, tea.Tick(m.interval, func(time.Time) tea.Msg { return watchRefetchMsg{} })
+		next := tea.Tick(m.interval, func(time.Time) tea.Msg { return watchRefetchMsg{} })
+		if finished && m.bell {
+			return m, tea.Batch(next, ringBell)
+		}
+		return m, next
 	case watchRefetchMsg:
 		return m, m.fetch()
 	}
