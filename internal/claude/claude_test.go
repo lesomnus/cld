@@ -84,7 +84,7 @@ func TestSeedSettings(t *testing.T) {
 		require.Equal(t, float64(7), v["cleanupPeriodDays"])
 		require.Equal(t, "opus", v["model"])
 	})
-	t.Run("adds activity hooks for UserPromptSubmit and Stop", func(t *testing.T) {
+	t.Run("adds activity hooks for UserPromptSubmit, PostToolUse, and Stop", func(t *testing.T) {
 		out, err := claude.SeedSettings(nil)
 		require.NoError(t, err)
 
@@ -92,6 +92,14 @@ func TestSeedSettings(t *testing.T) {
 		require.Len(t, up, 1)
 		require.Contains(t, up[0], "cld x activity working")
 		require.Contains(t, up[0], "|| true") // guarded: never fails the hook
+
+		// PostToolUse reports working when a tool result returns, so the session
+		// resumes from "working" after the user answers a mid-turn prompt (a
+		// choice or a permission approval) — those arrive as tool results, not a
+		// UserPromptSubmit, so nothing else would flip it back off "waiting".
+		post := hookCommands(t, out, "PostToolUse")
+		require.Len(t, post, 1)
+		require.Contains(t, post[0], "cld x activity working")
 
 		stop := hookCommands(t, out, "Stop")
 		require.Len(t, stop, 1)

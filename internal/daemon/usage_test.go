@@ -75,6 +75,57 @@ func TestUsageTargetsBrokerUnused(t *testing.T) {
 	}
 }
 
+// TestAccountUsageFallthrough pins the token-fallthrough policy: an account's
+// usage is answered by the first of its containers that can, so one container
+// with a bad or missing token never blanks the line when a sibling could answer.
+func TestAccountUsageFallthrough(t *testing.T) {
+	e := func(id string) *entry { return &entry{id: id} }
+	ok := &usage.Usage{}
+
+	t.Run("a sibling answers after the representative's token fails", func(t *testing.T) {
+		var tried []string
+		src := accountUsage("acct", []*entry{e("a"), e("b")}, func(en *entry) (*usage.Usage, error) {
+			tried = append(tried, en.id)
+			if en.id == "a" {
+				return nil, &usage.StatusError{Code: 401}
+			}
+			return ok, nil
+		})
+		require.Empty(t, src.Error)
+		require.Same(t, ok, src.Usage)
+		require.Equal(t, []string{"a", "b"}, tried, "must fall through to the sibling after 'a' fails")
+	})
+
+	t.Run("stops at the first success without trying later siblings", func(t *testing.T) {
+		var n int
+		src := accountUsage("acct", []*entry{e("a"), e("b")}, func(en *entry) (*usage.Usage, error) {
+			n++
+			return ok, nil
+		})
+		require.Same(t, ok, src.Usage)
+		require.Equal(t, 1, n, "a success must short-circuit the remaining candidates")
+	})
+
+	t.Run("reports the real error over a bare no-login", func(t *testing.T) {
+		src := accountUsage("acct", []*entry{e("a"), e("b")}, func(en *entry) (*usage.Usage, error) {
+			if en.id == "a" {
+				return nil, errNoLogin
+			}
+			return nil, &usage.StatusError{Code: 429}
+		})
+		require.Nil(t, src.Usage)
+		require.Contains(t, src.Error, "Too Many Requests", "the actionable endpoint error must win over 'no login'")
+	})
+
+	t.Run("all not-logged-in surfaces the no-login reason", func(t *testing.T) {
+		src := accountUsage("acct", []*entry{e("a"), e("b")}, func(en *entry) (*usage.Usage, error) {
+			return nil, errNoLogin
+		})
+		require.Nil(t, src.Usage)
+		require.Equal(t, errNoLogin.Error(), src.Error)
+	})
+}
+
 func TestParseAccountIdentity(t *testing.T) {
 	// The shape of a real .claude.json oauthAccount, trimmed to the fields used.
 	uuid, label := parseAccountIdentity([]byte(`{
@@ -149,6 +200,53 @@ func TestUsageCacheErrorShortTTL(t *testing.T) {
 	now = now.Add(2 * time.Second)
 	c.collect(context.Background(), tgts)
 	require.Equal(t, int32(2), calls, "a cached error must expire at usageErrTTL, well before UsageTTL")
+}
+
+// TestUsageCacheDropsCanceled pins that a fetch failing because the CALLER went
+// away (a canceled/timed-out context) is not cached: otherwise a transient
+// client timeout on a slow endpoint would pin "context canceled" on the source
+// for the whole usageErrTTL, so every fast follow-up call parrots it back.
+func TestUsageCacheDropsCanceled(t *testing.T) {
+	now := time.Unix(0, 0)
+	c := &usageCache{entries: map[string]usageEntry{}, now: func() time.Time { return now }}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the caller has already given up
+
+	var calls int32
+	fail := UsageSource{Label: "acct", Error: `query usage: Get "…": context canceled`}
+	rep := c.collect(ctx, []usageTarget{target("acct", "acct", &calls, fail)})
+
+	require.Equal(t, int32(1), calls)
+	_, ok := c.entries["acct"]
+	require.False(t, ok, "a caller-canceled fetch must not be cached")
+	require.Empty(t, rep.Sources, "with nothing cached the poisoned source is omitted, not served")
+}
+
+// TestUsageCacheCanceledKeepsPrior pins the other half: a canceled refresh must
+// not overwrite a prior good value — the stale-but-good number is served instead
+// of the cancellation artifact.
+func TestUsageCacheCanceledKeepsPrior(t *testing.T) {
+	now := time.Unix(0, 0)
+	c := &usageCache{entries: map[string]usageEntry{}, now: func() time.Time { return now }}
+
+	var calls int32
+	good := UsageSource{Label: "acct", Usage: &usage.Usage{}}
+	c.collect(context.Background(), []usageTarget{target("acct", "acct", &calls, good)})
+	require.Equal(t, int32(1), calls)
+
+	// Past the TTL the entry is stale, so a refresh is attempted — but under an
+	// already-canceled context.
+	now = now.Add(UsageTTL + time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	fail := UsageSource{Label: "acct", Error: "context canceled"}
+	rep := c.collect(ctx, []usageTarget{target("acct", "acct", &calls, fail)})
+
+	require.Len(t, rep.Sources, 1)
+	require.NotNil(t, rep.Sources[0].Usage, "the prior good value must still be served")
+	require.Empty(t, rep.Sources[0].Error)
+	require.NotNil(t, c.entries["acct"].src.Usage, "a canceled refresh must not overwrite the good entry")
 }
 
 func TestUsageCacheEvictsDeparted(t *testing.T) {

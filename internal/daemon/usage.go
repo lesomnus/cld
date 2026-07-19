@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path"
 	"sort"
 	"sync"
@@ -124,6 +125,17 @@ func (c *usageCache) collect(ctx context.Context, targets []usageTarget) *UsageR
 
 	for _, t := range stale {
 		src := t.fetch(ctx)
+		// A fetch that failed because our own context went away (the caller
+		// timed out or canceled — e.g. the 10s socket-client timeout firing on a
+		// slow endpoint) describes the caller giving up, not the source. Caching
+		// it would pin a bogus "context canceled" on the source for the whole
+		// usageErrTTL, so every fast follow-up call parrots it back. Skip caching
+		// and stop: any remaining fetch on this dead context would fail the same
+		// way. The report below then falls back to a prior (possibly stale)
+		// entry, or simply omits the source, rather than serving the artifact.
+		if ctx.Err() != nil {
+			break
+		}
 		c.mu.Lock()
 		c.entries[t.key] = usageEntry{src: src, at: c.now()}
 		c.mu.Unlock()
@@ -224,9 +236,22 @@ func (d *Daemon) usageTargets(ctx context.Context, selfID string) []usageTarget 
 	}
 	sort.Slice(cands, func(i, j int) bool { return cands[i].sessionName < cands[j].sessionName })
 
-	// One target per distinct account: the first session (by name) of each
-	// account is its representative and the source that gets queried.
-	seen := map[string]bool{}
+	// One target per distinct account, but every session sharing that account is
+	// kept as a candidate token source. Usage is an account-wide figure, so any
+	// of the account's containers can answer for it: the target's fetch tries
+	// them in order and stops at the first that succeeds (see fetchAccountUsage),
+	// so one container with a missing or expired token does not blank the whole
+	// account's line when a sibling could have answered. The account's first
+	// session by name stays its representative for label and version; appending a
+	// target only on a key's first sighting preserves the broker-first,
+	// then-by-name order.
+	type acctGroup struct {
+		label    string
+		version  string
+		sessions []*entry
+	}
+	groups := map[string]*acctGroup{}
+	var order []string
 	for _, cd := range cands {
 		uuid, acctLabel := d.sessionIdentity(ctx, cd.e)
 		key := "ctr:" + cd.e.id // fallback: account unknown, treat as its own source
@@ -237,17 +262,22 @@ func (d *Daemon) usageTargets(ctx context.Context, selfID string) []usageTarget 
 				label = acctLabel
 			}
 		}
-		if seen[key] {
-			continue
+		g, ok := groups[key]
+		if !ok {
+			g = &acctGroup{label: label, version: cd.version}
+			groups[key] = g
+			order = append(order, key)
 		}
-		seen[key] = true
-
-		e, version, lbl := cd.e, cd.version, label
+		g.sessions = append(g.sessions, cd.e)
+	}
+	for _, key := range order {
+		g := groups[key]
+		sessions, version, lbl := g.sessions, g.version, g.label
 		targets = append(targets, usageTarget{
 			key:   key,
 			label: lbl,
 			fetch: func(ctx context.Context) UsageSource {
-				return d.fetchSessionUsage(ctx, e, lbl, version)
+				return d.fetchAccountUsage(ctx, sessions, lbl, version)
 			},
 		})
 	}
@@ -311,28 +341,60 @@ func (d *Daemon) fetchBrokerUsage(ctx context.Context, version string) UsageSour
 	return src
 }
 
-// fetchSessionUsage reads a running session's live OAuth token from its own
+// errNoLogin marks a container that simply has no login yet, as opposed to a
+// real token-read or endpoint failure. accountUsage treats it as "keep looking"
+// so a sibling container is tried, and surfaces it only when every one of the
+// account's containers was merely not logged in.
+var errNoLogin = errors.New("no login in container")
+
+// fetchAccountUsage queries one account's usage, trying each of the account's
+// sessions' live tokens in order until one answers. Usage is account-wide, so
+// any container logged into the account can answer for it; falling through to a
+// sibling means a single container with a missing or expired token does not
+// blank the account's line when another container could have answered.
+func (d *Daemon) fetchAccountUsage(ctx context.Context, sessions []*entry, label, version string) UsageSource {
+	return accountUsage(label, sessions, func(e *entry) (*usage.Usage, error) {
+		return d.trySessionUsage(ctx, e, version)
+	})
+}
+
+// accountUsage is the token-fallthrough policy, split from container I/O so it
+// is unit-testable. It calls try for each session in order and returns the first
+// success; on total failure it reports the first real error (a hard token-read
+// or endpoint error), which is more actionable than the bare "no login" a
+// not-yet-authenticated container yields — the latter is surfaced only when
+// every session was merely errNoLogin.
+func accountUsage(label string, sessions []*entry, try func(*entry) (*usage.Usage, error)) UsageSource {
+	src := UsageSource{Label: label}
+	for _, e := range sessions {
+		u, err := try(e)
+		if err == nil {
+			return UsageSource{Label: label, Usage: u}
+		}
+		if src.Error == "" && !errors.Is(err, errNoLogin) {
+			src.Error = err.Error()
+		}
+	}
+	if src.Error == "" {
+		src.Error = errNoLogin.Error() // every container was simply not logged in
+	}
+	return src
+}
+
+// trySessionUsage reads a running session's live OAuth token from its own
 // container and queries usage with it. The live file (not the host-side backup)
 // is used so the token is the one claude is currently refreshing in place, which
-// avoids a stale-token 401.
-func (d *Daemon) fetchSessionUsage(ctx context.Context, e *entry, label, version string) UsageSource {
-	src := UsageSource{Label: label}
+// avoids a stale-token 401. A container with no login yet yields errNoLogin so
+// the caller can tell it apart from a real failure and try a sibling.
+func (d *Daemon) trySessionUsage(ctx context.Context, e *entry, version string) (*usage.Usage, error) {
 	tok, err := d.sessionToken(ctx, e)
 	if err != nil {
-		src.Error = err.Error()
-		return src
+		return nil, err
 	}
 	if tok == "" {
-		src.Error = "no login in container"
-		return src
+		return nil, errNoLogin
 	}
-	u, err := usage.Fetch(ctx, d.usage_hc, tok, version)
-	if err != nil {
-		src.Error = err.Error()
-		return src
-	}
-	src.Usage = u
-	return src
+	return usage.Fetch(ctx, d.usage_hc, tok, version)
 }
 
 // sessionToken reads the claudeAiOauth.accessToken from a container's live

@@ -201,10 +201,18 @@ func SeedSettings(existing []byte) ([]byte, error) {
 	// means the turn finished (waiting); a Notification fires when claude pauses
 	// for input — a permission prompt or 60s of idle — which is also a waiting
 	// state and, crucially, corrects a turn that stopped without a Stop (e.g. a
-	// permission prompt) so it doesn't stick at "working". The container's
-	// initial idle/waiting state is seeded by the daemon (see ensure_), so no
-	// SessionStart hook is needed — one would wrongly report a resume as idle.
+	// permission prompt) so it doesn't stick at "working". A PostToolUse fires
+	// after each tool result returns, which means claude is resuming work — this
+	// is the ONLY signal that reports "working" after the user answers a mid-turn
+	// prompt (a choice/AskUserQuestion or a permission approval): those arrive as
+	// tool results, not a UserPromptSubmit, so without this the session sticks at
+	// the "waiting" the Notification set until the next Stop. Its "working" always
+	// precedes the turn-ending Stop, so a completed turn still settles on waiting.
+	// The container's initial idle/waiting state is seeded by the daemon (see
+	// ensure_), so no SessionStart hook is needed — one would wrongly report a
+	// resume as idle.
 	mergeCommandHook(doc, "UserPromptSubmit", activityHookCommand("working"))
+	mergeCommandHook(doc, "PostToolUse", activityHookCommand("working"))
 	mergeCommandHook(doc, "Stop", activityHookCommand("waiting"))
 	mergeCommandHook(doc, "Notification", activityHookCommand("waiting"))
 
