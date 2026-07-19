@@ -53,62 +53,39 @@ func TestWatchWorkflowCell(t *testing.T) {
 		require.Equal(t, "", watchWorkflowCell(daemon.Item{}, now))
 	})
 
-	t.Run("live, aborted, and completed runs are tallied", func(t *testing.T) {
+	t.Run("shows finished/total across all runs, success or failure alike", func(t *testing.T) {
 		it := daemon.Item{Workflows: []daemon.WorkflowRun{
-			{RunID: "wf_live", Total: 5, Done: 2, UpdatedAt: now.Add(-10 * time.Second)},
-			{RunID: "wf_ok1", Total: 4, Done: 4, Finalized: true, Status: "completed"},
-			{RunID: "wf_ok2", Total: 3, Done: 3, Finalized: true, Status: "completed"},
-			{RunID: "wf_abort", Total: 4, Done: 3, Finalized: true},
+			{RunID: "wf_live", Total: 5, Done: 2, UpdatedAt: now.Add(-10 * time.Second)}, // live
+			{RunID: "wf_ok1", Total: 4, Done: 4, Finalized: true, Status: "completed"},   // finished
+			{RunID: "wf_ok2", Total: 3, Done: 3, Finalized: true, Status: "completed"},   // finished
+			{RunID: "wf_fail", Total: 4, Done: 3, Finalized: true, Status: "failed"},     // finished (failure still counts)
 		}}
-		cell := watchWorkflowCell(it, now)
-		require.Contains(t, cell, "▶1 2/5") // one live run, 2 of 5 agents done
-		require.Contains(t, cell, "⚠1")     // one aborted run
-		require.Contains(t, cell, "✓2")     // two completed runs
+		require.Contains(t, watchWorkflowCell(it, now), "3/4")
+	})
+
+	t.Run("all runs live reads 0/total", func(t *testing.T) {
+		it := daemon.Item{Workflows: []daemon.WorkflowRun{
+			{RunID: "a", Total: 5, Done: 2, UpdatedAt: now.Add(-2 * time.Second)},
+			// Balanced (every agent returned, next not launched) but not finalized,
+			// so still live — not counted as finished.
+			{RunID: "b", Total: 3, Done: 3, UpdatedAt: now.Add(-2 * time.Second)},
+		}}
+		require.Contains(t, watchWorkflowCell(it, now), "0/2")
+	})
+
+	t.Run("a crashed or finalized-failed run counts as finished, not live", func(t *testing.T) {
+		it := daemon.Item{Workflows: []daemon.WorkflowRun{
+			{RunID: "crash", Total: 5, Done: 2, UpdatedAt: now.Add(-10 * time.Minute)}, // gone quiet
+			{RunID: "fail", Total: 3, Done: 3, Finalized: true, Status: "failed"},      // finalized failure
+		}}
+		require.Contains(t, watchWorkflowCell(it, now), "2/2")
 	})
 
 	t.Run("a finalized run is never counted live even with a fresh mtime", func(t *testing.T) {
 		it := daemon.Item{Workflows: []daemon.WorkflowRun{
 			{RunID: "wf_x", Total: 5, Done: 2, Finalized: true, UpdatedAt: now},
 		}}
-		cell := watchWorkflowCell(it, now)
-		require.NotContains(t, cell, "▶")
-		require.Contains(t, cell, "⚠1")
-	})
-
-	t.Run("a not-finalized run gone quiet is treated as crashed, not live", func(t *testing.T) {
-		it := daemon.Item{Workflows: []daemon.WorkflowRun{
-			{RunID: "wf_stale", Total: 5, Done: 2, UpdatedAt: now.Add(-10 * time.Minute)},
-		}}
-		cell := watchWorkflowCell(it, now)
-		require.NotContains(t, cell, "▶")
-		require.Contains(t, cell, "⚠1")
-	})
-
-	t.Run("a live run momentarily balanced is still live, not completed", func(t *testing.T) {
-		// A sequential workflow between phases: every started agent returned,
-		// the next has not launched, and no state file exists yet.
-		it := daemon.Item{Workflows: []daemon.WorkflowRun{
-			{RunID: "wf_seq", Total: 3, Done: 3, Finalized: false, UpdatedAt: now.Add(-2 * time.Second)},
-		}}
-		cell := watchWorkflowCell(it, now)
-		require.Contains(t, cell, "▶1 3/3")
-		require.NotContains(t, cell, "✓")
-	})
-
-	t.Run("a finalized failure is a problem, not a completion", func(t *testing.T) {
-		it := daemon.Item{Workflows: []daemon.WorkflowRun{
-			{RunID: "wf_fail", Total: 3, Done: 3, Finalized: true, Status: "failed"},
-		}}
-		cell := watchWorkflowCell(it, now)
-		require.Contains(t, cell, "⚠1")
-		require.NotContains(t, cell, "✓")
-	})
-
-	t.Run("a finalized run with an unread status defaults to completed", func(t *testing.T) {
-		it := daemon.Item{Workflows: []daemon.WorkflowRun{
-			{RunID: "wf_unknown", Total: 3, Done: 3, Finalized: true, Status: ""},
-		}}
-		require.Contains(t, watchWorkflowCell(it, now), "✓1")
+		require.Contains(t, watchWorkflowCell(it, now), "1/1")
 	})
 }
 

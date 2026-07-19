@@ -24,8 +24,8 @@ func TestWatchTableWorkflowColumn(t *testing.T) {
 			}},
 	}
 	out := withWf.table()
-	require.Contains(t, out, "WORKFLOWS")
-	require.Contains(t, out, "▶1 8/12")
+	require.Contains(t, out, watchWorkflowHeader)
+	require.Contains(t, out, "1/2") // wf_a live, wf_b finished → 1 of 2 finished
 
 	noWf := base
 	noWf.items = []daemon.Item{
@@ -33,7 +33,7 @@ func TestWatchTableWorkflowColumn(t *testing.T) {
 			ActivitySince: now.Add(-time.Minute), Title: "Fix test"},
 	}
 	out = noWf.table()
-	require.NotContains(t, out, "WORKFLOWS", "column should collapse when no workflows")
+	require.NotContains(t, out, watchWorkflowHeader, "column should collapse when no workflows")
 
 	// A narrow-width frame must not panic and keeps the table columns. The
 	// activity column has no header and shows only a glyph, so "ACTIVITY" is

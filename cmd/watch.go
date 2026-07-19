@@ -338,7 +338,7 @@ func (m watchModel) table() string {
 	}
 	// The activity column has no header and shows only the status glyph (no word).
 	act := column{header: "", cells: make([]string, n)}
-	wf := column{header: "WORKFLOWS", cells: make([]string, n)}
+	wf := column{header: watchWorkflowHeader, cells: make([]string, n)}
 	// FOR is right-aligned and held at a fixed width so the columns after it do
 	// not shift as the durations tick and change length.
 	forc := column{header: "FOR", cells: make([]string, n), right: true, minWidth: watchForWidth}
@@ -483,38 +483,34 @@ func classifyWorkflowRun(w daemon.WorkflowRun, now time.Time) workflowBucket {
 	return workflowProblem // no state file and gone quiet: crashed mid-run
 }
 
-// watchWorkflowCell summarizes a container's workflow runs: live runs with
-// their agent progress, then any failed/stalled runs, then a tally of completed
-// ones. Empty when the container has run no workflows, which collapses the
-// column.
+// watchWorkflowHeader labels the WORKFLOWS column with a compact glyph — many
+// dots for the many agents a run fans out — so the header does not dominate the
+// row width the way the full word did.
+const watchWorkflowHeader = "⁙"
+
+// watchWorkflowCell summarizes a container's workflow runs as "<finished>/<total>":
+// how many of the runs launched are no longer live over the total number of runs.
+// Finished lumps every non-live outcome together — a clean completion, a failure,
+// and a crash all count the same — because the row only needs the parallel batch's
+// progress, not its success breakdown. Styled active while any run is still live,
+// dim once all have finished. Empty when the container has run no workflows, which
+// collapses the column.
 func watchWorkflowCell(it daemon.Item, now time.Time) string {
-	if len(it.Workflows) == 0 {
+	total := len(it.Workflows)
+	if total == 0 {
 		return ""
 	}
-	var live, problem, done, agDone, agTotal int
+	live := 0
 	for _, w := range it.Workflows {
-		switch classifyWorkflowRun(w, now) {
-		case workflowLive:
+		if classifyWorkflowRun(w, now) == workflowLive {
 			live++
-			agDone += w.Done
-			agTotal += w.Total
-		case workflowProblem:
-			problem++
-		default:
-			done++
 		}
 	}
-	parts := make([]string, 0, 3)
+	style := tui.HelpStyle
 	if live > 0 {
-		parts = append(parts, cardWorkingStyle.Render(fmt.Sprintf("▶%d %d/%d", live, agDone, agTotal)))
+		style = cardWorkingStyle
 	}
-	if problem > 0 {
-		parts = append(parts, tui.StatusStyle("failed").Render(fmt.Sprintf("⚠%d", problem)))
-	}
-	if done > 0 {
-		parts = append(parts, tui.HelpStyle.Render(fmt.Sprintf("✓%d", done)))
-	}
-	return strings.Join(parts, " ")
+	return style.Render(fmt.Sprintf("%d/%d", total-live, total))
 }
 
 // activityCell returns the glyph and style for a container's leading cell. A
