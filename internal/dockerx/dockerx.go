@@ -137,8 +137,15 @@ func CopyDirToContainer(ctx context.Context, cli *client.Client, ctr, destDir, n
 			if err != nil {
 				return err
 			}
+			// Preserve the source's executable bit (as 0755) so dotfiles helper
+			// scripts and ~/.local/bin executables stay runnable; everything else
+			// is 0644.
+			mode := int64(0o644)
+			if info, err := d.Info(); err == nil && info.Mode()&0o111 != 0 {
+				mode = 0o755
+			}
 			if err := tw.WriteHeader(&tar.Header{
-				Typeflag: tar.TypeReg, Name: arc, Mode: 0o644, Uid: uid, Gid: gid, Size: int64(len(data)),
+				Typeflag: tar.TypeReg, Name: arc, Mode: mode, Uid: uid, Gid: gid, Size: int64(len(data)),
 			}); err != nil {
 				return err
 			}

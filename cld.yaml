@@ -59,6 +59,18 @@ gh:
   # GitHub remote. Enabled by default; set to true to turn it off.
   #disabled: false
 
+dotfiles:
+  # Personalize each container from your host's ~/.dotfiles, like VS Code Dev
+  # Containers: cld copies ~/.dotfiles into the container and, if it has an
+  # install.sh, runs it (as the container user, with the copied dir as the
+  # working directory, honoring its shebang); otherwise it symlinks the tree's
+  # top-level dotfiles into $HOME. Nothing is sanitized — whatever you put in
+  # ~/.dotfiles is copied verbatim, so keep secrets out of it. The daemon reads
+  # ~/.dotfiles through the read-only host-home mount `cld install` adds, and
+  # does nothing when you have no ~/.dotfiles. Enabled by default; set to true
+  # to turn it off.
+  #disabled: false
+
 sync:
   # Delay after a change before conversation state is copied out.
   #debounce: 3s

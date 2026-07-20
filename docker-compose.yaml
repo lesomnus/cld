@@ -12,6 +12,7 @@ services:
       - DOCKER_HOST=unix:///var/run/docker.sock
       - XDG_CACHE_HOME=/data/cache
       - XDG_DATA_HOME=/data/share
+      - CLD_HOST_HOME=/host-home
       - PUID=${CLD_UID:-1000}
       - PGID=${CLD_GID:-1000}
 
@@ -19,5 +20,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HOME}/.cache/cld:/data/cache/cld
       - ${HOME}/.local/share/cld:/data/share/cld
+      # The host home (only the home), read-only, so the daemon can read ~/.dotfiles.
+      - ${HOME}:/host-home:ro
 
     restart: unless-stopped

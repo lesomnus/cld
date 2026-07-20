@@ -160,6 +160,12 @@ func (d *Daemon) ensure_(ctx context.Context, e *entry) error {
 		return fmt.Errorf("prepare state: %w", err)
 	}
 
+	// Best-effort: personalize the session from the host's ~/.dotfiles (run its
+	// install.sh, or symlink it), like VS Code Dev Containers. Shell-only, so not
+	// arch-gated. After prepare_state, which mkdir's the user's $HOME the copy
+	// targets.
+	d.install_dotfiles(ctx, e, id)
+
 	// Best-effort: give VS Code / Cursor a "claude" terminal profile that runs
 	// `cld it`. Needs the in-container cld binary (arch match).
 	if e.arch_ok {

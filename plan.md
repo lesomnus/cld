@@ -54,7 +54,9 @@ docker event를 listen해서 devcontainer가 뜨면, 호스트에 캐시해둔 c
 
 ## serve
 
-데몬 본체. 시작 순서가 중요하다:
+데몬 본체. **컨테이너 전용이다** — Docker 소켓과 호스트 HOME(읽기전용)을 마운트로 받아야 동작하는데 둘 다 맨호스트에는 없으므로, 컨테이너 밖에서 `cld serve`는 시작을 거부한다(`/.dockerenv` 등 로컬 신호로 판별, docker 호출 없이). `cld install`이나 compose로 띄우고, `serve`를 직접 부르는 건 자체 이미지를 감쌀 때뿐.
+
+시작 순서가 중요하다:
 
 1. **이벤트 구독을 먼저 연다** (`start`, `die`, `destroy` 필터).
 2. 그 다음 컨테이너 목록을 순회하며 reconcile한다. 구독→목록 순서라 그 사이에 뜬 컨테이너를 놓치지 않는다 (ensure가 멱등이므로 중복 이벤트는 무해).
@@ -68,7 +70,7 @@ docker event를 listen해서 devcontainer가 뜨면, 호스트에 캐시해둔 c
 1. 컨테이너 플랫폼 판별: arch는 inspect, libc는 musl 프로브(`/lib/libc.musl-*.so.1` 존재 확인). Alpine은 `libgcc`/`libstdc++`가 없으면 claude가 안 도니, 없으면 로그 남기고 skip.
 2. 해당 플랫폼 바이너리가 캐시에 없으면 다운로드 (동시 요청은 singleflight로 1회만).
 3. 컨테이너 안에 바이너리가 없거나 구버전이면 `docker cp`로 `/usr/local/bin/claude-<version>` 넣고 symlink `/usr/local/bin/claude` 원자 교체. (실행 중인 바이너리를 덮어쓰면 ETXTBSY로 실패하므로 반드시 버전 경로 + symlink.)
-4. `.claude.json`·`settings.json` 시드와 대화 기록 복원 (아래 "인증과 첫 실행", "대화 기록 지속" 참고).
+4. `.claude.json`·`settings.json` 시드와 대화 기록 복원 (아래 "인증과 첫 실행", "대화 기록 지속" 참고). 호스트 `~/.dotfiles`가 있으면 컨테이너 HOME에 복사하고 `install.sh` 실행(없으면 top-level dotfile을 `$HOME`에 symlink) — VS Code Dev Containers의 dotfiles와 동일. best-effort라 실패해도 프로비저닝을 막지 않는다. 데몬은 이걸 호스트 HOME(루트 전체가 아니라 HOME만) 읽기전용 마운트(`/host-home`)를 통해 읽는다.
 5. 호스트 tmux 세션이 없으면 생성. **단, 세션 생성은 (컨테이너 ID, start 이벤트)당 최대 1회.** 사용자가 claude를 `/exit` 하거나 세션을 죽였으면 그건 의도이므로 데몬이 되살리지 않는다. 컨테이너가 재시작되면 새 start 이벤트에서 다시 만든다.
    - 세션 env: `CLAUDE_CONFIG_DIR=<home>/.claude`, `DISABLE_AUTOUPDATER=1`, `TERM=xterm-256color`.
    - 세션 커맨드: 해당 프로젝트에 기존 대화가 있으면(`projects/<인코딩된 경로>/*.jsonl` 글롭) `claude --continue`, 없으면 `claude`. (`--continue`는 기록이 없으면 "No conversation found"로 실패하므로 무조건 붙이면 안 된다.)
@@ -202,7 +204,7 @@ compose에서 워크스페이스 컨테이너만 나오는 건 라벨 필터로 
 ## 로드맵 (미구현)
 
 - **cross-restart 스크롤백 유지**: 컨테이너 재시작 시 `respawn-pane`으로 이전 pane 버퍼를 살리는 것. 대화 내용은 `--continue`로 복원되므로 순수 터미널 스크롤백만의 이득이고, orphan 세션 정리 로직이 필요해 v1에서 제외. 필요해지면 추가.
-- **배포**: `cld serve`용 systemd user unit.
+- **배포**: 데몬 컨테이너를 관리하는 systemd user unit (`cld serve`는 컨테이너 전용이라 호스트에서 직접 돌리지 않으므로, `docker`/compose 유닛으로 감싼다).
 - **CI**: DinD 통합 테스트를 `.github/workflows/ci.yaml`에 연결(docker service 필요). 현재는 로컬 DinD 사이드카로만 실행.
 - **라이브 마운트**: 위 "사후 마운트" 3번(mount-namespace 수술). 진짜 양방향 실시간 공유가 필요해질 때만.
 

@@ -171,6 +171,7 @@ type entry struct {
 	session_done   bool   // session was evaluated for the current start generation
 	session_failed bool   // this generation's session exited non-zero; keep it visible
 	git_config     bool   // host gitconfig was installed into the config dir
+	dotfiles       bool   // host ~/.dotfiles was installed into this container
 	started_at     string // container State.StartedAt of the current generation
 	version        string
 

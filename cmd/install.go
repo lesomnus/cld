@@ -35,7 +35,12 @@ func NewCmdInstall() *xli.Command {
 			os.MkdirAll(c.CacheDir, 0o755)
 			os.MkdirAll(c.DataDir, 0o755)
 
-			spec, err := installer.SpecFor(image, os.Getenv("DOCKER_HOST"), c.CacheDir, c.DataDir, os.Getuid(), os.Getgid())
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return z.Err(err, "resolve home directory")
+			}
+
+			spec, err := installer.SpecFor(image, os.Getenv("DOCKER_HOST"), c.CacheDir, c.DataDir, home, os.Getuid(), os.Getgid())
 			if err != nil {
 				return err
 			}

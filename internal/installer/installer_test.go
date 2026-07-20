@@ -12,19 +12,21 @@ import (
 
 func TestSpecFor(t *testing.T) {
 	t.Run("local socket is bind-mounted", func(t *testing.T) {
-		s, err := SpecFor("img", "", "/home/u/.cache/cld", "/home/u/.local/share/cld", 1000, 1001)
+		s, err := SpecFor("img", "", "/home/u/.cache/cld", "/home/u/.local/share/cld", "/home/u", 1000, 1001)
 		require.NoError(t, err)
 		require.Equal(t, []string{"serve"}, s.Cmd)
 		require.Contains(t, s.Binds, "/var/run/docker.sock:/var/run/docker.sock")
 		require.Contains(t, s.Binds, "/home/u/.cache/cld:/data/cache/cld")
 		require.Contains(t, s.Binds, "/home/u/.local/share/cld:/data/share/cld")
+		require.Contains(t, s.Binds, "/home/u:/host-home:ro")
 		require.Contains(t, s.Env, "DOCKER_HOST=unix:///var/run/docker.sock")
+		require.Contains(t, s.Env, "CLD_HOST_HOME=/host-home")
 		require.Contains(t, s.Env, "PUID=1000")
 		require.Contains(t, s.Env, "PGID=1001")
 	})
 
 	t.Run("remote engine is refused", func(t *testing.T) {
-		_, err := SpecFor("img", "tcp://docker:2375", "/home/u/.cache/cld", "/home/u/.local/share/cld", 1000, 1000)
+		_, err := SpecFor("img", "tcp://docker:2375", "/home/u/.cache/cld", "/home/u/.local/share/cld", "/home/u", 1000, 1000)
 		require.Error(t, err) // the shared cache-dir bind needs a local engine
 	})
 }
@@ -56,7 +58,7 @@ func TestSpecMirrorsCompose(t *testing.T) {
 	svc, ok := cf.Services["cld"]
 	require.True(t, ok, "compose must have a `cld` service")
 
-	spec, err := SpecFor("ghcr.io/lesomnus/cld:edge", "", "/home/u/.cache/cld", "/home/u/.local/share/cld", 1000, 1000)
+	spec, err := SpecFor("ghcr.io/lesomnus/cld:edge", "", "/home/u/.cache/cld", "/home/u/.local/share/cld", "/home/u", 1000, 1000)
 	require.NoError(t, err)
 
 	require.Equal(t, svc.Command, spec.Cmd, "command")
@@ -85,12 +87,14 @@ func envKeys(env []string) []string {
 	return keys
 }
 
+// volumeTargets returns each mount's destination plus its mode (e.g.
+// "/host-home:ro"), so the drift guard also pins read-only-ness, not just path.
 func volumeTargets(vols []string) []string {
 	targets := make([]string, 0, len(vols))
 	for _, v := range vols {
 		parts := strings.Split(v, ":")
 		require_at_least_two(parts)
-		targets = append(targets, parts[1])
+		targets = append(targets, strings.Join(parts[1:], ":"))
 	}
 	return targets
 }

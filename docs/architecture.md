@@ -9,7 +9,7 @@ how the pieces fit together and how in-container access works.
 
 | Piece | Where it runs | Role |
 |-------|---------------|------|
-| `cld serve` (daemon) | host, or a compose container with the docker socket | watches docker events, provisions devcontainers, owns the tmux sessions, syncs state |
+| `cld serve` (daemon) | a container with the docker socket + host home mounted (via `cld install`/compose); refuses to run on the bare host | watches docker events, provisions devcontainers, owns the tmux sessions, syncs state |
 | tmux server | co-located with the daemon (`<CacheDir>/tmux.sock`) | one session per devcontainer; each pane runs `cld x exec … claude` |
 | `cld x exec` | tmux pane (daemon side) | `docker exec`s into the target container and runs `claude` with a TTY |
 | `claude` | inside each devcontainer | the Claude Code process, installed by the daemon at `/usr/local/bin/claude` |
@@ -34,27 +34,27 @@ Key paths (`CacheDir` defaults to `$XDG_CACHE_HOME/cld`, i.e. `~/.cache/cld`;
 ## Topology
 
 The daemon is the only component with a docker client. It manages *sibling*
-devcontainers; it never runs inside the container it is provisioning. It is
-normally run as a container by `cld install` (equivalently the reference
-`docker-compose.yaml`), which is also what enables in-container access below; it
-can still run directly on the host via `cld serve`.
+devcontainers; it never runs inside the container it is provisioning. It runs as
+a container by `cld install` (equivalently the reference `docker-compose.yaml`),
+which reaches Docker through the mounted socket and reads the host home through a
+read-only mount — so `cld serve` refuses to start unless it is containerized.
 
 ```
-        ┌────────────────────── daemon side (host or compose container) ──────────────────────┐
+        ┌────────────────────── daemon side (the daemon container) ─────────────────────────────┐
         │                                                                                       │
         │   cld serve ──┬── docker events / API (moby client)                                   │
         │               │                                                                       │
         │               ├── tmux server  (<CacheDir>/tmux.sock)                                 │
         │               │      └── session "cld-<name>"                                         │
-        │               │             └── pane: cld x exec <ctr> -- claude [--continue|| …]     │
+        │               │             └── pane: cld x exec <ctr> -- claude [--continue|| …]    │
         │               │                                  │  docker exec (TTY)                 │
-        │   cld.sock ◄── control API (HTTP)                │                                    │
-        └──────────────────────────────────────────────── │ ───────────────────────────────────┘
+        │   cld.sock ◄── control API (HTTP)               │                                    │
+        └───────────────────────────────────────────────── │ ───────────────────────────────────┘
                                                            ▼
-        ┌────────────────────── target devcontainer ──────────────────────┐
-        │   claude  (/usr/local/bin/claude, CLAUDE_CONFIG_DIR=~/.cld/claude)│
-        │   cld x watch / cld x agent / cld x api   (driven by the daemon)  │
-        └──────────────────────────────────────────────────────────────────┘
+        ┌────────────────────── target devcontainer ──────────────────────────┐
+        │   claude  (/usr/local/bin/claude, CLAUDE_CONFIG_DIR=~/.cld/claude)  │
+        │   cld x watch / cld x agent / cld x api   (driven by the daemon)    │
+        └─────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Provisioning lifecycle (`internal/daemon/ensure.go`)
@@ -258,7 +258,9 @@ attach on the daemon side.
 GET /info, then:
   daemon in a container this host can see   → docker-exec attach   (host)
   else the daemon offers API attach         → API attach           (in-container)
-  else (daemon on this host)                → local tmux attach
+  else                                      → local tmux attach     (fallback; the
+                                               daemon no longer runs on the bare host,
+                                               so this fires only if it can't self-identify)
 ```
 
 `daemon_container_reachable` tells host from in-container by inspecting the

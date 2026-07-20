@@ -12,6 +12,17 @@ var DefaultConfigPaths = []string{
 	"cld.yml",
 }
 
+const (
+	// HostHomeMount is the container path where `cld install` mounts the host
+	// user's home directory (only the home, not the whole host root), read-only,
+	// so the daemon — which runs inside a container — can still read host-side
+	// files such as ~/.dotfiles.
+	HostHomeMount = "/host-home"
+	// HostHomeEnv carries HostHomeMount into the daemon; its presence is also
+	// what tells `cld serve` it is running as the intended container.
+	HostHomeEnv = "CLD_HOST_HOME"
+)
+
 type Config struct {
 	path string
 
@@ -26,12 +37,20 @@ type Config struct {
 	// (the "devcontainer.local_folder" label) to exclude from provisioning.
 	Ignore []string `yaml:"ignore"`
 
-	Auth    AuthConfig    `yaml:"auth"`
-	Release ReleaseConfig `yaml:"release"`
-	Gh      GhConfig      `yaml:"gh"`
-	Sync    SyncConfig    `yaml:"sync"`
-	Up      UpConfig      `yaml:"up"`
-	Install InstallConfig `yaml:"install"`
+	// HostHome is the container path where the host user's home directory is
+	// mounted read-only (see HostHomeMount), sourced from CLD_HOST_HOME. It lets
+	// the daemon read host-side files such as ~/.dotfiles despite running inside
+	// a container. Empty when the daemon runs without that mount. Not a user
+	// knob — it is wired in by `cld install` / docker-compose.
+	HostHome string `yaml:"-"`
+
+	Auth     AuthConfig     `yaml:"auth"`
+	Release  ReleaseConfig  `yaml:"release"`
+	Gh       GhConfig       `yaml:"gh"`
+	Dotfiles DotfilesConfig `yaml:"dotfiles"`
+	Sync     SyncConfig     `yaml:"sync"`
+	Up       UpConfig       `yaml:"up"`
+	Install  InstallConfig  `yaml:"install"`
 
 	Otel OtelConfig
 }

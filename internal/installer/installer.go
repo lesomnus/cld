@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/lesomnus/cld/cmd/config"
 	"github.com/lesomnus/cld/internal/devcup"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
@@ -37,8 +38,10 @@ type Spec struct {
 // SpecFor builds the daemon spec. dockerHost is $DOCKER_HOST (how the daemon
 // will reach Docker); cacheDir/dataDir are the host's cld cache and data dirs
 // (shared with the daemon so the host `cld` reaches the same socket, and the
-// conversation backups persist); uid/gid own those dirs.
-func SpecFor(image string, dockerHost string, cacheDir, dataDir string, uid, gid int) (Spec, error) {
+// conversation backups persist); home is the host user's home, mounted
+// read-only so the daemon can read host-side files like ~/.dotfiles; uid/gid
+// own those dirs.
+func SpecFor(image string, dockerHost string, cacheDir, dataDir, home string, uid, gid int) (Spec, error) {
 	access, err := devcup.AccessFor(dockerHost)
 	if err != nil {
 		return Spec{}, err
@@ -49,19 +52,23 @@ func SpecFor(image string, dockerHost string, cacheDir, dataDir string, uid, gid
 	if access.Bind == "" {
 		return Spec{}, fmt.Errorf("cld install needs a local Docker engine; " +
 			"DOCKER_HOST points at a remote one — run the daemon on the engine's host " +
-			"(e.g. with docker-compose there) or via `cld serve`")
+			"with `cld install` or `docker compose up -d` there")
 	}
 
 	env := []string{
 		"XDG_CACHE_HOME=/data/cache",
 		"XDG_DATA_HOME=/data/share",
 		"DOCKER_HOST=unix:///var/run/docker.sock",
+		config.HostHomeEnv + "=" + config.HostHomeMount,
 		fmt.Sprintf("PUID=%d", uid),
 		fmt.Sprintf("PGID=%d", gid),
 	}
 	binds := []string{
 		cacheDir + ":/data/cache/cld",
 		dataDir + ":/data/share/cld",
+		// The host home, read-only, so the daemon can read ~/.dotfiles even
+		// though it runs inside a container.
+		home + ":" + config.HostHomeMount + ":ro",
 		access.Bind,
 	}
 

@@ -219,7 +219,7 @@ func wait_ready(ctx context.Context, cmd *xli.Command, socket string, workspace 
 	// as transient below.
 	if _, err := os.Stat(socket); err != nil {
 		fmt.Fprintln(cmd.ErrWriter, "cld: devcontainer is up, but no daemon is reachable;"+
-			" start `cld serve` to get a claude session")
+			" run `cld install` (or `docker compose up -d`) to get a claude session")
 		return nil, nil
 	}
 

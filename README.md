@@ -35,10 +35,11 @@ $ docker create --name cld-tmp ghcr.io/lesomnus/cld:edge \
 Then bring the daemon up and attach:
 
 ```sh
-# Run the daemon as a container on your Docker. It mounts the Docker socket and
-# your ~/.cache/cld + ~/.local/share/cld, and runs as your user so the sockets
-# it creates are yours (which is what lets the host `cld` reach it). Re-run with
-# `--recreate` to replace it (e.g. to upgrade); `cld uninstall` removes it.
+# Run the daemon as a container on your Docker. It mounts the Docker socket,
+# your ~/.cache/cld + ~/.local/share/cld, and your home read-only (so it can
+# read ~/.dotfiles), and runs as your user so the sockets it creates are yours
+# (which is what lets the host `cld` reach it). Re-run with `--recreate` to
+# replace it (e.g. to upgrade); `cld uninstall` removes it.
 $ cld install
 
 # The daemon watches Docker events and provisions every devcontainer it sees
@@ -79,9 +80,8 @@ confirmation (skip with `-y`). Use `down` to shelve a devcontainer, `purge` to
 be rid of it for good.
 
 The host needs no tmux for this: `cld it` asks the daemon where its tmux server
-lives and, when the daemon runs in a container, attaches through a `docker
-exec` into it — the tmux bundled in the image is the only one involved. (With
-the daemon running directly on the host instead, `cld it` uses the host tmux.)
+lives and attaches through a `docker exec` into the daemon container — the tmux
+bundled in the image is the only one involved.
 
 ### Running the daemon another way
 
@@ -93,10 +93,12 @@ step — the repo's `docker-compose.yaml` is kept current as a reference:
 $ CLD_UID=$(id -u) CLD_GID=$(id -g) docker compose up -d
 ```
 
-You can also run the daemon directly on the host with `cld serve` (it needs
-Docker access; attaching from *inside* a devcontainer, though, requires the
-containerized daemon). Or drive an in-container daemon in place, no host binary
-needed: `docker compose exec cld cld ls`, `docker compose exec -it cld cld it myapp`.
+The daemon runs only inside a container — it reaches Docker through the mounted
+socket and reads your home through the read-only mount, neither of which holds
+on the bare host, so `cld serve` refuses to start unless it is containerized.
+`cld install` and the compose file above are the two ways to launch it; you can
+also drive an in-container daemon in place, no host binary needed:
+`docker compose exec cld cld ls`, `docker compose exec -it cld cld it myapp`.
 
 ## Day-to-day usage
 
@@ -193,6 +195,17 @@ up — but only into that project's own isolated backup dir, restored on that
 project's next `cld up` after a `cld down`. It never becomes the new baseline
 for other projects; only editing user-default does that.
 
+**Your dotfiles come with you.** If you keep a `~/.dotfiles` on the host, cld
+copies it into every container and personalizes the session from it, like VS
+Code Dev Containers: if it has an `install.sh`, cld runs it (as the container
+user, with the copied dir as the working directory, honoring its shebang);
+otherwise it symlinks the tree's top-level dotfiles into `$HOME`. The daemon
+reads `~/.dotfiles` through the read-only home mount `cld install` adds — unlike
+user-default config, **nothing is sanitized**, so keep secrets out of
+`~/.dotfiles`. It is a no-op when you have none; turn it off with
+`dotfiles.disabled: true`. See [`docs/dotfiles.md`](docs/dotfiles.md) for
+examples and how a dotfiles `.gitconfig` relates to cld's built-in git sharing.
+
 ## Commands
 
 The daemon (**`cld serve`**) is the engine; everything else is a client of it.
@@ -202,17 +215,18 @@ day in `cld up`/`cld it`/`cld ls`/`cld down`.
 ### Setup
 
 - **`cld install`** — run the daemon as a container on this host's Docker,
-  mounting the socket and your shared cache/data dirs as your user. This is the
-  normal way to get cld running; do it once per host. `--recreate` replaces an
-  existing daemon (e.g. to upgrade the image); `--image` overrides the image.
-  Requires a local Docker engine.
+  mounting the socket, your shared cache/data dirs, and your home read-only (for
+  `~/.dotfiles`), as your user. This is the normal way to get cld running; do it
+  once per host. `--recreate` replaces an existing daemon (e.g. to upgrade the
+  image); `--image` overrides the image. Requires a local Docker engine.
 - **`cld uninstall`** — stop and remove the daemon container. Conversation
   backups under the data dir are kept, so a later `cld install` + `cld up`
   restores history.
-- **`cld serve`** — run the daemon in the foreground, directly (no container).
-  For development, debugging, or a host-managed setup (e.g. systemd). `cld
-  install` is the containerized equivalent and what most people want; note that
-  attaching from *inside* a devcontainer requires the containerized daemon.
+- **`cld serve`** — the daemon itself (what the container runs). It must run
+  inside a container — it reaches Docker and reads your home through mounts that
+  don't exist on the bare host — so it refuses to start otherwise. Use `cld
+  install` or the compose file; run `serve` directly only when building your own
+  container image around it.
 
 ### Everyday
 
@@ -304,6 +318,8 @@ how the config tiers relate.
 cld's own user-default Claude Code config (settings, `CLAUDE.md`, commands,
 agents, output styles — see "Your claude config comes with you" above) is
 propagated into every session by default; see `auth.share_config` in
+`cld.yaml` to disable it. Your host `~/.dotfiles` is likewise applied to every
+container (see "Your dotfiles come with you" above); see `dotfiles` in
 `cld.yaml` to disable it.
 
 See `plan.md` for the design and roadmap.

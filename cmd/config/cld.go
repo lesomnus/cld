@@ -107,6 +107,16 @@ type GhConfig struct {
 	Disabled bool `yaml:"disabled"`
 }
 
+type DotfilesConfig struct {
+	// Disabled turns off personalizing each container from the host's
+	// ~/.dotfiles: copying it into the container and running its install.sh, or
+	// — when there is none — symlinking its top-level dotfiles into $HOME (like
+	// VS Code Dev Containers' dotfiles). Off by default (zero value = enabled).
+	// It reads the host home through the read-only mount `cld install` adds, and
+	// is a no-op when ~/.dotfiles does not exist.
+	Disabled bool `yaml:"disabled"`
+}
+
 type SyncConfig struct {
 	// Delay after a change before the conversation state is copied out,
 	// coalescing bursts of file events into a single copy.
@@ -170,7 +180,22 @@ func (c *Config) evaluateCld() error {
 		c.Install.Image = "ghcr.io/lesomnus/cld:edge"
 	}
 
+	if c.HostHome == "" {
+		c.HostHome = os.Getenv(HostHomeEnv)
+	}
+
 	return nil
+}
+
+// DotfilesDir is the host's ~/.dotfiles as the daemon sees it, under the
+// read-only host-home mount (HostHomeMount). It is "" when the daemon has no
+// such mount (HostHome unset), in which case there are no host dotfiles to
+// install.
+func (c *Config) DotfilesDir() string {
+	if c.HostHome == "" {
+		return ""
+	}
+	return filepath.Join(c.HostHome, ".dotfiles")
 }
 
 // expandTilde replaces a leading "~/" (or a bare "~") with the home directory.
