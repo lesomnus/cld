@@ -137,7 +137,7 @@ func (d *Daemon) ensure_(ctx context.Context, e *entry) error {
 		e.publish()
 	}
 
-	version, err := d.install_claude(ctx, e, id)
+	version, err := d.install_claude(ctx, e, id, "")
 	if err != nil {
 		return fmt.Errorf("install claude: %w", err)
 	}
@@ -405,14 +405,16 @@ func (d *Daemon) resolve(ctx context.Context, e *entry, id string, labels map[st
 	return nil
 }
 
-// install_claude puts the current version into the container as
-// claude-<version> and atomically points the "claude" symlink at it, so a
-// running binary is never overwritten (ETXTBSY) and live sessions keep
-// their version. The copy verifies the installed size to detect an
-// interrupted earlier copy, and re-fetches the host binary if the cache was
-// garbage-collected out from under it.
-func (d *Daemon) install_claude(ctx context.Context, e *entry, id string) (string, error) {
-	version, bin, err := d.rel.Ensure(ctx, e.platform)
+// install_claude puts a version into the container as claude-<version> and
+// atomically points the "claude" symlink at it, so a running binary is never
+// overwritten (ETXTBSY) and live sessions keep their version. channel selects
+// the release channel to install: "" is the daemon's tracked channel (the normal
+// provisioning path), a non-empty channel (e.g. "latest") is resolved fresh for
+// a one-off `cld update --channel`. The copy verifies the installed size to
+// detect an interrupted earlier copy, and re-fetches the host binary if the
+// cache was garbage-collected out from under it.
+func (d *Daemon) install_claude(ctx context.Context, e *entry, id string, channel string) (string, error) {
+	version, bin, err := d.rel.EnsureChannel(ctx, channel, e.platform)
 	if err != nil {
 		return "", err
 	}
@@ -421,7 +423,7 @@ func (d *Daemon) install_claude(ctx context.Context, e *entry, id string) (strin
 	if err := d.install_binary(ctx, id, bin, name); err != nil {
 		// The cache may have been GC'd between Ensure and open; retry once.
 		if os.IsNotExist(err) {
-			if _, bin, err = d.rel.Ensure(ctx, e.platform); err != nil {
+			if _, bin, err = d.rel.EnsureChannel(ctx, channel, e.platform); err != nil {
 				return "", err
 			}
 			if err = d.install_binary(ctx, id, bin, name); err != nil {

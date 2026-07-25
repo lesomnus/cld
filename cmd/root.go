@@ -32,6 +32,7 @@ func NewCmdRoot() *xli.Command {
 			NewCmdWatch(),
 			NewCmdUsage(),
 			NewCmdIt(),
+			NewCmdUpdate(),
 			NewCmdAgent(),
 			NewCmdAuth(),
 			NewCmdX(),

@@ -142,6 +142,7 @@ keeps running; reopen (or `cld it myapp` from the host) to pick it back up.
 | Scroll up through output            | mouse wheel, or `ctrl-b [` + arrows, `q` to exit   |
 | See what's running                  | `cld ls`                                           |
 | Recover after exiting claude        | `cld it --new <name>`                              |
+| Update claude to the latest version | `cld update <name>` (`--all` for every one)        |
 | Remove a devcontainer               | `cld down <name>` (keeps the conversation backup)  |
 | Remove every devcontainer cld manages | `cld down --all` (skips `cld.ignore` / non-cld)  |
 | Delete a devcontainer for good      | `cld purge <name>` (also deletes volumes + backup) |
@@ -268,6 +269,21 @@ day in `cld up`/`cld it`/`cld ls`/`cld down`.
   `session-ended`). The new session starts with `--continue`, resuming the prior
   conversation. This is the way back after you *quit* claude (rather than
   detaching) — don't type `claude` into the dead pane.
+- **`cld update [name]`** — reinstall Claude Code into a devcontainer and restart
+  its session so the new binary takes effect. The daemon otherwise only re-resolves
+  the release channel on its own schedule (`release.check_interval`, default `1h`)
+  and follows the configured `release.channel` (`stable` by default), so a freshly
+  recreated container gets whatever version the daemon last cached — not necessarily
+  the newest. `cld update` forces a fresh channel check, re-injects the binary, and
+  recreates the session (which detaches you; reattach with `cld it`). With no `name`
+  it targets the only devcontainer (its own, run inside a container).
+  **`cld update --all`** does this for every devcontainer cld manages; ones without
+  a live session (stopped / not yet ready) are skipped.
+  Note the `stable` channel intentionally lags `latest` by a few releases. To pull
+  the newest without changing what the daemon tracks, override the channel for one
+  install: **`cld update --channel latest <name>`** (or `--all`). To follow a
+  channel permanently, set `release.channel: latest` in `cld.yaml` and restart the
+  daemon.
 - **`cld config`** — print the effective configuration as YAML (defaults merged
   with your `cld.yaml`). Use it to check what settings are in effect.
 - **`cld version`** — print the cld version and build info.

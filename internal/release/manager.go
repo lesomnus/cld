@@ -126,6 +126,32 @@ func (m *Manager) Ensure(ctx context.Context, p Platform) (string, string, error
 	return v, path, nil
 }
 
+// EnsureChannel returns the path to a specific channel's current binary for the
+// platform, downloading it if needed. An empty channel means the Manager's own
+// tracked channel and delegates to Ensure (updating the tracked version and
+// running cache GC). A non-empty channel is resolved fresh against the release
+// server every call and, unlike Ensure, does NOT touch the tracked
+// channel/version or run GC: it is a one-off install of a specific channel (e.g.
+// `cld update --channel latest` against a daemon that follows stable), so the
+// next provision of the tracked channel is unaffected. The freshly installed
+// binary is already in the container, so a later GC of the tracked version
+// dropping this one from the host cache is harmless.
+func (m *Manager) EnsureChannel(ctx context.Context, channel string, p Platform) (string, string, error) {
+	if channel == "" {
+		return m.Ensure(ctx, p)
+	}
+
+	v, err := m.Client.Version(ctx, channel)
+	if err != nil {
+		return "", "", err
+	}
+	path, err := m.Cache.Ensure(ctx, v, p)
+	if err != nil {
+		return "", "", err
+	}
+	return v, path, nil
+}
+
 // pick_newest picks the largest version by naive semver-ish comparison.
 func pick_newest(vs []string) string {
 	best := vs[0]

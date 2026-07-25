@@ -49,6 +49,8 @@ func (d *Daemon) api() http.Handler {
 	mux.HandleFunc("POST /down/all", d.handle_down_all)
 	mux.HandleFunc("POST /purge", d.handle_purge)
 	mux.HandleFunc("POST /purge/all", d.handle_purge_all)
+	mux.HandleFunc("POST /claude/update", d.handle_update)
+	mux.HandleFunc("POST /claude/update/all", d.handle_update_all)
 	mux.HandleFunc("POST /auth/credentials", d.handle_set_credentials)
 	mux.HandleFunc("GET /usage", d.handle_usage(""))
 	return mux
@@ -107,6 +109,9 @@ func (d *Daemon) scoped_api(self_id string) http.Handler {
 	mux.HandleFunc("GET /session/attach", only_self(d.handle_attach))
 	mux.HandleFunc("POST /session/new", only_self(d.handle_session_new))
 	mux.HandleFunc("POST /down", only_self(d.handle_down))
+	// A container may update its own Claude Code binary and restart its own
+	// session; the whole-fleet /claude/update/all is deliberately host-only.
+	mux.HandleFunc("POST /claude/update", only_self(d.handle_update))
 	// A container reports its OWN conversation activity here (claude's hooks call
 	// `cld x activity <state>`). The identity is the bound self_id, not a caller
 	// argument, so it is inherently self-scoped — a container can only ever set
@@ -434,6 +439,131 @@ func (d *Daemon) handle_teardown_all(w http.ResponseWriter, _ *http.Request, pur
 	json.NewEncoder(w).Encode(map[string]any{"results": results})
 }
 
+// UpdateResult is the per-devcontainer outcome of a `cld update` / `--all`.
+type UpdateResult struct {
+	Name    string `json:"name"`
+	ID      string `json:"id"`
+	OK      bool   `json:"ok"`
+	Version string `json:"version,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+// handle_update re-injects the current Claude Code binary into one
+// devcontainer, by display name, and recreates its session so the new binary
+// takes effect. The release channel is re-resolved first so the newest version
+// is installed, not the daemon's hourly-cached one. Backs `cld update`.
+func (d *Daemon) handle_update(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		http.Error(w, "name required", http.StatusBadRequest)
+		return
+	}
+	e := d.by_name(name)
+	if e == nil {
+		http.Error(w, "no such devcontainer", http.StatusNotFound)
+		return
+	}
+
+	// An explicit ?channel= is resolved fresh by install_claude, so only the
+	// tracked-channel path needs a forced refresh (best-effort: on failure the
+	// install falls back to the cached version).
+	channel := r.URL.Query().Get("channel")
+	if channel == "" {
+		d.refresh_release(r.Context())
+	}
+
+	done := make(chan updateOutcome, 1)
+	if !e.mbox.post(func() {
+		v, err := d.update_claude(d.base_ctx, e, channel)
+		done <- updateOutcome{version: v, err: err}
+	}) {
+		http.Error(w, "container is no longer tracked", http.StatusConflict)
+		return
+	}
+	oc := <-done
+	if oc.err != nil {
+		http.Error(w, oc.err.Error(), http.StatusConflict)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(UpdateResult{
+		Name: e.snapshot().Name, ID: short(e.id), OK: true, Version: oc.version,
+	})
+}
+
+// handle_update_all re-injects the current Claude Code binary into every
+// devcontainer cld manages and recreates each session. It re-resolves the
+// channel once, then fans the tracked entries out to their own workers so the
+// installs and restarts run concurrently. A container that is not provisioned
+// (stopped, or not yet ready) has no session to update and is skipped, so it is
+// omitted from the response. It is only on the full control plane, never the
+// in-container scoped_api — a managed container must not restart the whole
+// fleet's sessions.
+func (d *Daemon) handle_update_all(w http.ResponseWriter, r *http.Request) {
+	// An explicit ?channel= is resolved fresh per install; otherwise refresh the
+	// tracked channel once for the whole fleet rather than per worker.
+	channel := r.URL.Query().Get("channel")
+	if channel == "" {
+		d.refresh_release(r.Context())
+	}
+
+	d.mu.Lock()
+	entries := make([]*entry, 0, len(d.entries))
+	for _, e := range d.entries {
+		entries = append(entries, e)
+	}
+	d.mu.Unlock()
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].snapshot().Name < entries[j].snapshot().Name
+	})
+
+	type pending struct {
+		id   string
+		name string
+		done chan updateOutcome
+	}
+	pends := make([]pending, 0, len(entries))
+	for _, e := range entries {
+		done := make(chan updateOutcome, 1)
+		// Runs on the worker, after any ensure already queued for this entry, so
+		// the provisioned check reads settled state.
+		posted := e.mbox.post(func() {
+			if e.cfg_dir == "" || e.platform == "" || e.item.Workspace == "" {
+				done <- updateOutcome{skip: true}
+				return
+			}
+			v, err := d.update_claude(d.base_ctx, e, channel)
+			done <- updateOutcome{version: v, err: err}
+		})
+		// A worker whose mailbox is already closed (its container was torn down
+		// concurrently) is effectively gone; skip it silently.
+		if !posted {
+			continue
+		}
+		pends = append(pends, pending{id: e.id, name: e.snapshot().Name, done: done})
+	}
+
+	results := make([]UpdateResult, 0, len(pends))
+	for _, p := range pends {
+		oc := <-p.done
+		// A container with no session to update (not provisioned) is not reported.
+		if oc.skip {
+			continue
+		}
+		res := UpdateResult{Name: p.name, ID: short(p.id), Version: oc.version}
+		if oc.err != nil {
+			res.Error = oc.err.Error()
+		} else {
+			res.OK = true
+		}
+		results = append(results, res)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"results": results})
+}
+
 // maxCredentialsLen bounds the accepted credentials body. A ~/.claude
 // credentials file is a few hundred bytes; this is generous.
 const maxCredentialsLen = 16384
@@ -730,6 +860,82 @@ func recreateSession(ctx context.Context, socket string, name string, proxy stri
 		return fmt.Errorf("daemon: %s: %s", res.Status, string(body))
 	}
 	return nil
+}
+
+// UpdateClaude asks the daemon to re-inject the current Claude Code binary into
+// one devcontainer and recreate its session so the new binary takes effect. The
+// daemon re-resolves the release channel first, so this installs the newest
+// version rather than the daemon's hourly-cached one. A non-empty channel
+// (e.g. "latest") overrides the daemon's configured channel for this install
+// only, without changing what the daemon tracks. Returns the outcome (including
+// the version now installed). Backs `cld update`. It allows a generous timeout
+// because a version bump downloads the binary before it is injected.
+func UpdateClaude(ctx context.Context, socket string, name string, channel string) (UpdateResult, error) {
+	hc := NewSocketClient(socket)
+	hc.Timeout = 5 * time.Minute
+	url := "http://cld/claude/update?name=" + urlpkg.QueryEscape(name)
+	if channel != "" {
+		url += "&channel=" + urlpkg.QueryEscape(channel)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		return UpdateResult{}, err
+	}
+
+	res, err := hc.Do(req)
+	if err != nil {
+		return UpdateResult{}, fmt.Errorf("is `cld serve` running? %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 512))
+		return UpdateResult{}, fmt.Errorf("daemon: %s: %s", res.Status, string(body))
+	}
+
+	var out UpdateResult
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		return UpdateResult{}, err
+	}
+	return out, nil
+}
+
+// UpdateClaudeAll asks the daemon to re-inject the current Claude Code binary
+// into every devcontainer it manages and recreate each session, returning the
+// per-container outcome. Containers cld does not manage are never tracked by the
+// daemon, so they are never touched; a container without a live session (stopped
+// or not yet ready) is skipped and omitted from the results. Backs
+// `cld update --all`. A non-empty channel (e.g. "latest") overrides the daemon's
+// configured channel for these installs only. It allows a generous timeout
+// because each may download the binary and several run at once.
+func UpdateClaudeAll(ctx context.Context, socket string, channel string) ([]UpdateResult, error) {
+	hc := NewSocketClient(socket)
+	hc.Timeout = 10 * time.Minute
+	url := "http://cld/claude/update/all"
+	if channel != "" {
+		url += "?channel=" + urlpkg.QueryEscape(channel)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	res, err := hc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("is `cld serve` running? %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 512))
+		return nil, fmt.Errorf("daemon: %s: %s", res.Status, string(body))
+	}
+
+	var out struct {
+		Results []UpdateResult `json:"results"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out.Results, nil
 }
 
 // DownAll asks the daemon to stop and remove every devcontainer it manages,

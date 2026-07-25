@@ -122,6 +122,58 @@ func TestCacheGC(t *testing.T) {
 	require.ElementsMatch(t, []string{"1.1.0"}, cache.Versions())
 }
 
+// TestManagerEnsureChannel pins the one-off channel override behind
+// `cld update --channel`: a non-empty channel is resolved fresh and installs
+// that channel's version, without changing the version the Manager tracks for
+// the normal provisioning path.
+func TestManagerEnsureChannel(t *testing.T) {
+	stableBin := []byte("#!/bin/sh\necho stable\n")
+	latestBin := []byte("#!/bin/sh\necho latest\n")
+	sum := func(b []byte) string { s := sha256.Sum256(b); return hex.EncodeToString(s[:]) }
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/stable", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, "1.0.0") })
+	mux.HandleFunc("/latest", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, "2.0.0") })
+	reg := func(version string, bin []byte) {
+		manifest := Manifest{Version: version, Platforms: map[Platform]ManifestEntry{
+			"linux-x64": {Binary: "claude", Checksum: sum(bin), Size: int64(len(bin))},
+		}}
+		mux.HandleFunc("/"+version+"/manifest.json", func(w http.ResponseWriter, r *http.Request) {
+			json.NewEncoder(w).Encode(manifest)
+		})
+		mux.HandleFunc("/"+version+"/linux-x64/claude", func(w http.ResponseWriter, r *http.Request) {
+			w.Write(bin)
+		})
+	}
+	reg("1.0.0", stableBin)
+	reg("2.0.0", latestBin)
+
+	s := httptest.NewServer(mux)
+	t.Cleanup(s.Close)
+
+	rc := NewClient(s.URL)
+	m := &Manager{Client: rc, Cache: &Cache{Dir: t.TempDir(), Client: rc}, Channel: "stable"}
+
+	// Empty channel follows the tracked channel (stable) and records its version.
+	v, p, err := m.EnsureChannel(context.Background(), "", "linux-x64")
+	require.NoError(t, err)
+	require.Equal(t, "1.0.0", v)
+	data, err := os.ReadFile(p)
+	require.NoError(t, err)
+	require.Equal(t, stableBin, data)
+
+	// An explicit channel resolves fresh and installs that channel's version...
+	v, p, err = m.EnsureChannel(context.Background(), "latest", "linux-x64")
+	require.NoError(t, err)
+	require.Equal(t, "2.0.0", v)
+	data, err = os.ReadFile(p)
+	require.NoError(t, err)
+	require.Equal(t, latestBin, data)
+
+	// ...without changing what the Manager tracks for the normal path.
+	require.Equal(t, "1.0.0", m.version)
+}
+
 func TestCompareVersions(t *testing.T) {
 	t.Run("ordering", func(t *testing.T) {
 		require.Equal(t, 1, compare_versions("2.1.10", "2.1.9"))
