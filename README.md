@@ -143,6 +143,8 @@ keeps running; reopen (or `cld it myapp` from the host) to pick it back up.
 | See what's running                  | `cld ls`                                           |
 | Recover after exiting claude        | `cld it --new <name>`                              |
 | Update claude to the latest version | `cld update <name>` (`--all` for every one)        |
+| Edit the config shared into containers | `cld setting edit` (`… edit claude-md`)         |
+| See a container's effective config  | `cld setting cat <name>` (pipes: `… cat app \| jq`) |
 | Remove a devcontainer               | `cld down <name>` (keeps the conversation backup)  |
 | Remove every devcontainer cld manages | `cld down --all` (skips `cld.ignore` / non-cld)  |
 | Delete a devcontainer for good      | `cld purge <name>` (also deletes volumes + backup) |
@@ -181,7 +183,10 @@ everywhere: `settings.json`, your personal `CLAUDE.md`, and your `commands/`,
 `agents/`, and `output-styles/`. This is a directory cld owns
 (`~/.local/share/cld/user-default/` by default) — **not** your host's
 `~/.claude`; cld never reads or writes that. Populate it by editing files
-there directly (copy in whatever you want propagated). `settings.json` is
+there directly (copy in whatever you want propagated) or with
+**`cld setting edit`**, which opens your `$EDITOR` on `settings.json`
+(`cld setting edit claude-md` for `CLAUDE.md`) and validates JSON before saving.
+`settings.json` is
 sanitized first — its secret- and host-only keys are dropped so they never
 cross into the container (`env`, the `apiKeyHelper`/`aws*`/`otel` auth
 helpers, the project-MCP auto-trust flags), like the git credential helper
@@ -284,8 +289,26 @@ day in `cld up`/`cld it`/`cld ls`/`cld down`.
   install: **`cld update --channel latest <name>`** (or `--all`). To follow a
   channel permanently, set `release.channel: latest` in `cld.yaml` and restart the
   daemon.
-- **`cld config`** — print the effective configuration as YAML (defaults merged
-  with your `cld.yaml`). Use it to check what settings are in effect.
+- **`cld setting edit [file]`** — open your `$EDITOR` (like `kubectl edit`) on
+  cld's user-default Claude Code config — the config installed into every
+  devcontainer, a directory cld owns (not your host's `~/.claude`). With no
+  argument it edits `settings.json`; `cld setting edit claude-md` edits the
+  personal `CLAUDE.md`. It edits a copy and writes back only on a changed, valid
+  buffer — `settings.json` must parse as a JSON object (what cld installs), so a
+  typo is caught before it is saved instead of being silently dropped inside every
+  container. Changes apply to new or recreated sessions (`cld it --new` /
+  `cld update`), not ones already running. Honors `$VISUAL`/`$EDITOR` (e.g.
+  `EDITOR="code --wait"`).
+- **`cld setting cat [name] [file]`** — print a devcontainer's *effective* Claude
+  Code config: the file as it actually exists inside that container, after cld
+  sanitized the user-default base and merged its own keys — so it shows what claude
+  really runs with, which `cld setting edit` (the shared source) does not. With no
+  `file` it prints `settings.json`; `cld setting cat <name> claude-md` prints
+  `CLAUDE.md`. With no `name` it targets the only devcontainer (its own, run inside
+  a container). Output is verbatim, so it pipes: `cld setting cat app | jq .model`.
+- **`cld config`** — print cld's own daemon configuration as YAML (defaults merged
+  with your `cld.yaml`) — distinct from `cld setting`, which is claude's config.
+  Use it to check what settings are in effect.
 - **`cld version`** — print the cld version and build info.
 
 ### Internal

@@ -10,12 +10,14 @@ import (
 	"net/http"
 	urlpkg "net/url"
 	"os"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/lesomnus/cld/internal/broker"
+	"github.com/lesomnus/cld/internal/dockerx"
 )
 
 // Info tells clients where the daemon — and so the tmux server — lives, so
@@ -51,6 +53,7 @@ func (d *Daemon) api() http.Handler {
 	mux.HandleFunc("POST /purge/all", d.handle_purge_all)
 	mux.HandleFunc("POST /claude/update", d.handle_update)
 	mux.HandleFunc("POST /claude/update/all", d.handle_update_all)
+	mux.HandleFunc("GET /claude/config", d.handle_get_config)
 	mux.HandleFunc("POST /auth/credentials", d.handle_set_credentials)
 	mux.HandleFunc("GET /usage", d.handle_usage(""))
 	return mux
@@ -112,6 +115,8 @@ func (d *Daemon) scoped_api(self_id string) http.Handler {
 	// A container may update its own Claude Code binary and restart its own
 	// session; the whole-fleet /claude/update/all is deliberately host-only.
 	mux.HandleFunc("POST /claude/update", only_self(d.handle_update))
+	// A container may read its own effective config.
+	mux.HandleFunc("GET /claude/config", only_self(d.handle_get_config))
 	// A container reports its OWN conversation activity here (claude's hooks call
 	// `cld x activity <state>`). The identity is the bound self_id, not a caller
 	// argument, so it is inherently self-scoped — a container can only ever set
@@ -564,6 +569,74 @@ func (d *Daemon) handle_update_all(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"results": results})
 }
 
+// configFiles is the allowlist of config-dir files `cld cat` may read: the
+// same user-managed files `cld edit` writes. It is an allowlist, not an
+// arbitrary path, so the endpoint can never be turned into a read-any-file probe
+// of a container. The values are the on-disk names under the config dir.
+var configFiles = map[string]bool{"settings.json": true, "CLAUDE.md": true}
+
+// handle_get_config returns the raw bytes of one config-dir file as it actually
+// exists inside a devcontainer — the effective config claude uses there, i.e.
+// the user-default base after cld sanitized it and merged its own keys. Backs
+// `cld cat`. The read runs on the container's worker so it sees settled
+// cfg_dir/id state and never races provisioning.
+func (d *Daemon) handle_get_config(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		http.Error(w, "name required", http.StatusBadRequest)
+		return
+	}
+	file := r.URL.Query().Get("file")
+	if file == "" {
+		file = "settings.json"
+	}
+	if !configFiles[file] {
+		http.Error(w, "unsupported file", http.StatusBadRequest)
+		return
+	}
+
+	e := d.by_name(name)
+	if e == nil {
+		http.Error(w, "no such devcontainer", http.StatusNotFound)
+		return
+	}
+
+	type result struct {
+		data        []byte
+		found       bool
+		provisioned bool
+		err         error
+	}
+	done := make(chan result, 1)
+	if !e.mbox.post(func() {
+		if e.cfg_dir == "" {
+			done <- result{}
+			return
+		}
+		data, ok, err := dockerx.ReadFile(d.base_ctx, d.cli, e.id, path.Join(e.cfg_dir, file))
+		done <- result{data: data, found: ok, provisioned: true, err: err}
+	}) {
+		http.Error(w, "container is no longer tracked", http.StatusConflict)
+		return
+	}
+
+	res := <-done
+	if res.err != nil {
+		http.Error(w, res.err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !res.provisioned {
+		http.Error(w, "devcontainer is not provisioned yet", http.StatusConflict)
+		return
+	}
+	if !res.found {
+		http.Error(w, fmt.Sprintf("%s: no such file in this devcontainer", file), http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Write(res.data)
+}
+
 // maxCredentialsLen bounds the accepted credentials body. A ~/.claude
 // credentials file is a few hundred bytes; this is generous.
 const maxCredentialsLen = 16384
@@ -897,6 +970,33 @@ func UpdateClaude(ctx context.Context, socket string, name string, channel strin
 		return UpdateResult{}, err
 	}
 	return out, nil
+}
+
+// GetClaudeConfig returns the raw bytes of a config-dir file (file "" means
+// settings.json) as it actually exists inside the named devcontainer — the
+// effective config claude uses there. A missing file or unknown devcontainer
+// surfaces as the daemon's own message. Backs `cld cat`.
+func GetClaudeConfig(ctx context.Context, socket string, name string, file string) ([]byte, error) {
+	hc := NewSocketClient(socket)
+	url := "http://cld/claude/config?name=" + urlpkg.QueryEscape(name)
+	if file != "" {
+		url += "&file=" + urlpkg.QueryEscape(file)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	res, err := hc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("is `cld serve` running? %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 512))
+		return nil, fmt.Errorf("%s", strings.TrimSpace(string(body)))
+	}
+	return io.ReadAll(res.Body)
 }
 
 // UpdateClaudeAll asks the daemon to re-inject the current Claude Code binary
