@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/lesomnus/cld/internal/daemon"
+	"github.com/lesomnus/cld/internal/devc"
 	"github.com/lesomnus/cld/internal/tui"
 	"github.com/lesomnus/xli"
 	"github.com/lesomnus/xli/flg"
@@ -266,29 +267,63 @@ func (m watchModel) frame_view() string {
 	b.WriteByte('\n')
 	b.WriteString(m.table())
 
-	// Usage bars are pinned to the very bottom of the screen, right-aligned; the
-	// old key-hint/interval line is gone.
-	return m.pinBottom(b.String(), usageBottom(m.usage, m.now, m.width))
+	return m.pinBottom(b.String(), m.bottomBlock())
 }
 
-// usageBottom builds the usage lines pinned to the screen bottom: one
-// right-aligned braille bar per login (no account name), or nil when there is
-// nothing to show. now feeds the time-to-reset; width right-aligns each line.
-func usageBottom(report *daemon.UsageReport, now time.Time, width int) []string {
-	if report == nil || len(report.Sources) == 0 {
+// bottomBlock builds the lines pinned to the screen bottom: one right-aligned
+// subscription-usage bar per login, or nil when there is none. Each bar is sized
+// to the full width and degrades to fit it — narrowing first drops the
+// percentage, then shrinks the gauge (see usageBar). The in/out/cw totals used
+// to share this row but now live in the header, left of the clock (see header).
+func (m watchModel) bottomBlock() []string {
+	if m.usage == nil || len(m.usage.Sources) == 0 {
 		return nil
 	}
-	lines := make([]string, 0, len(report.Sources))
-	for _, s := range report.Sources {
-		line := usageBar(s, now)
-		if width > 0 {
-			if pad := width - lipgloss.Width(line); pad > 0 {
-				line = strings.Repeat(" ", pad) + line
-			}
-		}
-		lines = append(lines, line)
+	lines := make([]string, len(m.usage.Sources))
+	for i, s := range m.usage.Sources {
+		lines[i] = rightAlign(usageBar(s, m.now, m.width), m.width)
 	}
 	return lines
+}
+
+// rightAlign pads s with leading spaces so it ends at column width. A zero or
+// too-small width leaves s untouched (piped output, or a bar already too wide).
+func rightAlign(s string, width int) string {
+	if pad := width - lipgloss.Width(s); width > 0 && pad > 0 {
+		return strings.Repeat(" ", pad) + s
+	}
+	return s
+}
+
+// watchUsageTotals is the fleet-wide consumption summary shown at the bottom
+// left: the daemon's persisted weekly tally of input, output, and cache-write
+// tokens (see daemon.weeklyStore), labeled with the same glyphs as the table's
+// in/out/cw columns (and, like them, leaving cacheRead out). Unlike the table's
+// per-container numbers this is "this week" and survives a daemon restart. Empty
+// when the report is missing or the window is still untouched, so the line
+// collapses rather than printing three zeros.
+func watchUsageTotals(report *daemon.UsageReport, compact bool) string {
+	if report == nil || report.Weekly.Empty() {
+		return ""
+	}
+	w := report.Weekly
+	// Each value sits in a fixed-width, right-aligned slot with its glyph on the
+	// RIGHT, so the numbers line up in a column and the glyphs read as a trailing
+	// unit — no separators needed between the three.
+	part := func(v int64, glyph string) string {
+		return fmt.Sprintf("%*s%s", watchTokenColWidth, formatTokens(v), glyph)
+	}
+	// compact keeps only the cache-write figure — the one the narrow table also
+	// keeps — so the line still says something when there is no room for three.
+	if compact {
+		return tui.HelpStyle.Render(part(w.CacheCreation, watchCacheWriteHeader))
+	}
+	parts := []string{
+		part(w.Input, watchInHeader),
+		part(w.Output, watchOutHeader),
+		part(w.CacheCreation, watchCacheWriteHeader),
+	}
+	return tui.HelpStyle.Render(strings.Join(parts, "  "))
 }
 
 // pinBottom places the bottom lines on the last rows of the alt-screen, filling
@@ -312,41 +347,140 @@ func (m watchModel) pinBottom(top string, bottom []string) string {
 	return strings.Join(lines, "\n")
 }
 
-// header is the top line: just the Claude mark on the left and a right-aligned
-// clock — no title text or counts.
+// header is the top line: the Claude mark on the left, and on the right the
+// fleet-wide weekly in/out/cw totals followed by the clock. The logo stays far
+// left; the totals+clock group is right-aligned, so the totals sit just left of
+// the clock.
 func (m watchModel) header() string {
 	logo := watchLogoStyle.Render(watchLogo)
 	clock := tui.HelpStyle.Render(m.now.Format("15:04:05"))
-	if gap := m.width - lipgloss.Width(logo) - lipgloss.Width(clock); m.width > 0 && gap > 1 {
-		return logo + strings.Repeat(" ", gap) + clock
+	right := clock
+	if totals := m.headerTotals(); totals != "" {
+		right = totals + "  " + clock
 	}
-	return logo + "   " + clock
+	if gap := m.width - lipgloss.Width(logo) - lipgloss.Width(right); m.width > 0 && gap > 1 {
+		return logo + strings.Repeat(" ", gap) + right
+	}
+	return logo + "   " + right
 }
 
-// table renders the aligned rows. Columns are ACTIVITY, NAME, ALIAS, FOR,
-// [WORKFLOWS,] TITLE; every column but TITLE is padded to its widest cell, and
-// TITLE is truncated to whatever width remains. The WORKFLOWS column collapses
-// entirely when no container is running any workflow, so the common case stays
-// narrow.
+// headerTotals is the weekly in/out/cw tally shown left of the clock: the full
+// three when they fit beside the logo and clock, the compact cache-write-only
+// form when they do not, and nothing when even that would not fit.
+func (m watchModel) headerTotals() string {
+	full := watchUsageTotals(m.usage, false)
+	if full == "" || m.width <= 0 {
+		return full
+	}
+	// Space the right group needs: logo, a one-space minimum gap after it, the
+	// totals, two spaces, and the 8-char clock.
+	fits := func(s string) bool {
+		return lipgloss.Width(watchLogo)+1+lipgloss.Width(s)+2+8 <= m.width
+	}
+	if fits(full) {
+		return full
+	}
+	if compact := watchUsageTotals(m.usage, true); fits(compact) {
+		return compact
+	}
+	return ""
+}
+
+// watchName merges a container's alias into the tail of its name, so one column
+// carries both. The alias is derived FROM the name — segment initials ("lc" for
+// "lesomnus-cld"), a truncation, or the whole name — so its last character is
+// almost always the first character of the name's last segment. Overlapping
+// them there prints the alias, in the accent color, running straight into the
+// rest of that segment: "lc"+"cld" reads as "lcld", "avln"+"name" as "avlname",
+// "mcp"+"project" as "mcproject".
+//
+// The overlap is the longest suffix of the alias that starts the last segment,
+// matched case-insensitively so a name carrying capitals still merges (the
+// alias is always lowercased, the name is not). Every alias form Alias produces
+// overlaps by at least one character; the exception is a collision-broken alias
+// ("lc-3f"), which shares nothing with the name. That falls back to the two
+// fields side by side — exactly how they read as separate columns today — so
+// nothing is ever silently fused into a word that is neither.
+func watchName(it daemon.Item) string {
+	alias, seg := it.Alias, devc.LastSegment(it.Name)
+	if alias == "" || seg == "" {
+		if alias != "" {
+			return cardAliasStyle.Render(alias)
+		}
+		return it.Name
+	}
+
+	lower := strings.ToLower(alias)
+	for n := min(len(alias), len(seg)); n > 0; n-- {
+		if strings.HasSuffix(lower, strings.ToLower(seg[:n])) {
+			return cardAliasStyle.Render(alias) + seg[n:]
+		}
+	}
+	return cardAliasStyle.Render(alias) + " " + seg
+}
+
+// watchAliasCell is the narrow-screen NAME cell: just the alias (in the accent
+// color), which is what the merged watchName leads with anyway. A container with
+// no alias yet falls back to its name's last segment so the row is never blank.
+func watchAliasCell(it daemon.Item) string {
+	if it.Alias != "" {
+		return cardAliasStyle.Render(it.Alias)
+	}
+	if seg := devc.LastSegment(it.Name); seg != "" {
+		return seg
+	}
+	return it.Name
+}
+
+// table renders the aligned rows. Columns are ACTIVITY, NAME, FOR (⟳/⟳+),
+// [IN, OUT, CW, CW-RATE,] [WORKFLOWS]; every column is padded to its widest cell.
+// The consumption and WORKFLOWS columns collapse entirely when no container has
+// anything to show there.
+//
+// When the frame is too narrow to hold the full row, columns are shed in a fixed
+// order until it fits: first the WORKFLOWS glyph, then the in/out (↓/↑) pair,
+// then NAME drops from the merged name to the alias alone. The always-kept core
+// is activity, name, working-time, and the cache-write columns — the cache write
+// being the one consumption signal worth watching (see the token-type comment).
 func (m watchModel) table() string {
 	n := len(m.items)
 	type column struct {
 		header   string
 		cells    []string
-		right    bool // right-align header and cells (for the numeric FOR column)
+		right    bool // right-align header and cells (for the numeric columns)
 		minWidth int  // floor on the column width, so it does not jitter frame to frame
+		width    int  // resolved width: max of header, minWidth, and every cell
 	}
+	measure := func(c column) column {
+		c.width = max(lipgloss.Width(c.header), c.minWidth)
+		for _, cell := range c.cells {
+			c.width = max(c.width, lipgloss.Width(cell))
+		}
+		return c
+	}
+
 	// The activity column has no header and shows only the status glyph (no word).
 	act := column{header: "", cells: make([]string, n)}
 	wf := column{header: watchWorkflowHeader, cells: make([]string, n)}
-	// FOR is right-aligned and held at a fixed width so the columns after it do
-	// not shift as the durations tick and change length.
-	forc := column{header: "FOR", cells: make([]string, n), right: true, minWidth: watchForWidth}
-	alias := column{header: "", cells: make([]string, n)}
-	name := column{header: "NAME", cells: make([]string, n)}
-	titles := make([]string, n)
+	// The two working-time columns are right-aligned and held at a fixed width
+	// so the columns after them do not shift as the durations tick.
+	workLast := column{header: watchWorkLastHeader, cells: make([]string, n), right: true, minWidth: watchDurationWidth}
+	workTotal := column{header: watchWorkTotalHeader, cells: make([]string, n), right: true, minWidth: watchDurationWidth}
+	// NAME has two forms: the merged alias+name (watchName) and, when squeezed,
+	// the alias alone (watchAliasCell).
+	nameFull := column{header: "NAME", cells: make([]string, n)}
+	nameAlias := column{header: "NAME", cells: make([]string, n)}
+	// Consumption, right-aligned so the magnitudes line up down the list, and
+	// held at a fixed width so the columns do not jitter as the numbers change.
+	// Fresh input, generated output, cache writes, and the live cache-write rate
+	// — cacheRead is deliberately omitted (see the token-type constants).
+	in := column{header: watchInHeader, cells: make([]string, n), right: true, minWidth: watchTokenColWidth}
+	out := column{header: watchOutHeader, cells: make([]string, n), right: true, minWidth: watchTokenColWidth}
+	cw := column{header: watchCacheWriteHeader, cells: make([]string, n), right: true, minWidth: watchTokenColWidth}
+	cwRate := column{header: watchCacheWriteRateHeader, cells: make([]string, n), right: true, minWidth: watchTokenColWidth + 1}
 
 	anyWf := false
+	anyTel := false
 	for i, it := range m.items {
 		glyph, style := m.activityCell(it)
 		act.cells[i] = style.Render(glyph)
@@ -354,47 +488,90 @@ func (m watchModel) table() string {
 			wf.cells[i] = c
 			anyWf = true
 		}
-		forc.cells[i] = tui.HelpStyle.Render(watchDuration(it, m.now))
-		alias.cells[i] = cardAliasStyle.Render(it.Alias)
-		name.cells[i] = it.Name
-		titles[i] = it.Title
-	}
-
-	cols := []column{act, name, alias, forc}
-	if anyWf {
-		cols = append(cols, wf) // after FOR, before the trailing TITLE
-	}
-
-	widths := make([]int, len(cols))
-	for c := range cols {
-		widths[c] = max(lipgloss.Width(cols[c].header), cols[c].minWidth)
-		for _, cell := range cols[c].cells {
-			widths[c] = max(widths[c], lipgloss.Width(cell))
+		workLast.cells[i] = tui.HelpStyle.Render(watchWorkLast(it, m.now))
+		workTotal.cells[i] = tui.HelpStyle.Render(watchWorkTotal(it, m.now))
+		nameFull.cells[i] = watchName(it)
+		nameAlias.cells[i] = watchAliasCell(it)
+		// A container that never reported leaves the cells empty rather than
+		// showing a zero, which would claim it was measured and found idle.
+		if t := it.Telemetry; t != nil {
+			anyTel = true
+			in.cells[i] = tui.HelpStyle.Render(formatTokens(t.ByType[daemon.TokenTypeInput]))
+			out.cells[i] = tui.HelpStyle.Render(formatTokens(t.ByType[daemon.TokenTypeOutput]))
+			cw.cells[i] = tui.HelpStyle.Render(formatTokens(t.ByType[daemon.TokenTypeCacheCreation]))
+			// The rate cell brightens with the rate (see tui.RateStyle), so a
+			// container actively churning the cache stands out down the column.
+			cwRate.cells[i] = tui.RateStyle(t.CacheCreationPerMin).Render(formatRate(t.CacheCreationPerMin))
 		}
 	}
+
+	act, workLast, workTotal = measure(act), measure(workLast), measure(workTotal)
+	nameFull, nameAlias = measure(nameFull), measure(nameAlias)
+	in, out, cw, cwRate, wf = measure(in), measure(out), measure(cw), measure(cwRate), measure(wf)
 
 	const gap = 2
-	// sepAfter is the gap written after column c. The activity column is a lone
-	// glyph, so a single space after it reads better than the standard two; every
-	// other column (and the gap before TITLE) keeps the two-space gap.
+	// rowWidth is the rendered width of a column set: the two-space indent, each
+	// column, and the gap after every column but the last (one space after the
+	// lone activity glyph, two elsewhere).
+	rowWidth := func(cols []column) int {
+		w := 2
+		for i := range cols {
+			w += cols[i].width
+			switch {
+			case i == len(cols)-1:
+			case i == 0:
+				w++
+			default:
+				w += gap
+			}
+		}
+		return w
+	}
+	// build assembles the visible columns for a degradation tier. alias swaps NAME
+	// to the alias-only form; showInOut and showWf keep those columns.
+	build := func(showWf, showInOut, alias bool) []column {
+		name := nameFull
+		if alias {
+			name = nameAlias
+		}
+		cols := []column{act, name, workLast, workTotal}
+		if anyTel {
+			if showInOut {
+				cols = append(cols, in, out)
+			}
+			cols = append(cols, cw, cwRate)
+		}
+		if anyWf && showWf {
+			cols = append(cols, wf)
+		}
+		return cols
+	}
+	// Richest first; shed workflow, then in/out, then the full name — stopping at
+	// the first tier that fits (or the narrowest if none do).
+	tiers := []struct{ wf, inOut, alias bool }{
+		{true, true, false},
+		{false, true, false},
+		{false, false, false},
+		{false, false, true},
+	}
+	cols := build(true, true, false)
+	for _, t := range tiers {
+		cols = build(t.wf, t.inOut, t.alias)
+		if m.width <= 0 || rowWidth(cols) <= m.width {
+			break
+		}
+	}
+
 	sepAfter := func(c int) string {
-		if c == 0 {
+		switch {
+		case c == len(cols)-1:
+			return ""
+		case c == 0:
 			return " "
+		default:
+			return strings.Repeat(" ", gap)
 		}
-		return strings.Repeat(" ", gap)
 	}
-
-	// TITLE gets the leftover width after every fixed column plus its trailing
-	// gap and the leading two-space indent.
-	titleBudget := 0
-	if m.width > 0 {
-		used := 2
-		for c := range cols {
-			used += widths[c] + len(sepAfter(c))
-		}
-		titleBudget = m.width - used
-	}
-
 	pad := func(s string, w int, right bool) string {
 		d := w - lipgloss.Width(s)
 		if d <= 0 {
@@ -409,33 +586,21 @@ func (m watchModel) table() string {
 	var b strings.Builder
 	var head strings.Builder
 	for c := range cols {
-		head.WriteString(pad(cols[c].header, widths[c], cols[c].right))
+		head.WriteString(pad(cols[c].header, cols[c].width, cols[c].right))
 		head.WriteString(sepAfter(c))
 	}
-	head.WriteString("TITLE")
 	b.WriteString("  ")
-	b.WriteString(tui.HelpStyle.Render(head.String()))
+	b.WriteString(tui.HelpStyle.Render(strings.TrimRight(head.String(), " ")))
 	b.WriteByte('\n')
 
 	for i := range m.items {
 		b.WriteString("  ")
+		var row strings.Builder
 		for c := range cols {
-			b.WriteString(pad(cols[c].cells[i], widths[c], cols[c].right))
-			b.WriteString(sepAfter(c))
+			row.WriteString(pad(cols[c].cells[i], cols[c].width, cols[c].right))
+			row.WriteString(sepAfter(c))
 		}
-		switch {
-		case titles[i] == "":
-			b.WriteString(tui.HelpStyle.Render("—"))
-		case m.width <= 0:
-			// Width unknown (piped output): render the full title and let the
-			// consumer wrap it.
-			b.WriteString(tui.HelpStyle.Render(titles[i]))
-		case titleBudget > 0:
-			b.WriteString(tui.HelpStyle.Render(watchTruncate(titles[i], titleBudget)))
-		default:
-			// Width known but the fixed columns already fill it: omit the title
-			// rather than render it full and overflow the row further.
-		}
+		b.WriteString(strings.TrimRight(row.String(), " "))
 		b.WriteByte('\n')
 	}
 	return b.String()
@@ -487,6 +652,27 @@ func classifyWorkflowRun(w daemon.WorkflowRun, now time.Time) workflowBucket {
 // dots for the many agents a run fans out — so the header does not dominate the
 // row width the way the full word did.
 const watchWorkflowHeader = "⁙"
+
+// The consumption column headers are glyphs: ↓ input (tokens coming IN), ↑
+// output (tokens going OUT), ● cache write (the cacheCreation type; cacheRead
+// has no column). lipgloss measures each as one cell, which is what the column
+// padding is computed from. Note these are East-Asian *Ambiguous* width: a
+// terminal configured to draw Ambiguous glyphs two cells wide (some CJK locales)
+// will shift the columns after them by one — an accepted trade for the clearer
+// glyphs. The rate's denominator lives in its header rather than in every cell
+// (see formatRate), which is both narrower and where a unit belongs in a table.
+const (
+	watchInHeader             = "↓"
+	watchOutHeader            = "↑"
+	watchCacheWriteHeader     = "●"
+	watchCacheWriteRateHeader = "●" + rateUnit
+)
+
+// watchTokenColWidth fixes the in/out/cw columns to a stable width so they do
+// not jitter frame to frame as the numbers grow and shrink. formatTokens caps
+// at three significant figures ("999.9k", "1.2M"), so six cells always holds a
+// value with room for the glyph header.
+const watchTokenColWidth = 6
 
 // watchWorkflowCell summarizes a container's workflow runs as "<finished>/<total>":
 // how many of the runs launched are no longer live over the total number of runs.
@@ -541,25 +727,71 @@ func (m watchModel) activityCell(it daemon.Item) (string, lipgloss.Style) {
 	}
 }
 
-// watchForWidth is the fixed width of the FOR column, sized for the widest
-// duration it prints ("59m59s"/"23h59m"), so shorter values right-align within
-// it and the columns after FOR never shift as the durations tick.
-const watchForWidth = 6
+// watchDurationWidth is the fixed width of each working-time column, sized for
+// the widest duration they print ("59m59s"/"23h59m"), so shorter values
+// right-align within it and the columns after them never shift as the durations
+// tick.
+const watchDurationWidth = 6
 
-// watchDuration is the FOR cell: how long the container has held its current
-// state. For a ready container that is the conversation activity's age; for any
-// other state it is the lifecycle state's age. A zero mark — an activity the
-// daemon never observed changing, i.e. a poll-only cross-arch container — shows
-// "—" rather than a fabricated duration.
-func watchDuration(it daemon.Item, now time.Time) string {
-	since := it.StatusSince
-	if it.Status == daemon.StatusReady {
-		since = it.ActivitySince
+// watchWorkLastHeader and watchWorkTotalHeader label the two working-time
+// columns. Both reuse "⟳" — the same glyph activityLook already draws for a
+// working conversation, so it is already proven to render at one cell in the
+// terminals cld runs in (unlike the stopwatch and hourglass pictographs, which
+// default to emoji presentation and would be drawn double-width and colored).
+// The bare glyph is the CURRENT or most recent stint; "+" marks the one that
+// accumulates, matching how "#/m" qualifies "#".
+const (
+	watchWorkLastHeader  = "⟳"
+	watchWorkTotalHeader = "⟳+"
+)
+
+// watchWorkLast is how long the conversation's current generating stint has been
+// running, or — when it is not generating — how long the most recent one ran.
+// While working the value ticks live from ActivitySince, so a long turn visibly
+// grows without the daemon having to republish.
+//
+// An empty cell means there is nothing to report yet: no stint has completed and
+// none is running. That includes a poll-only (cross-arch) container, whose
+// activity transitions the daemon never observes — showing a "0s" there would
+// claim it was measured and found instant.
+func watchWorkLast(it daemon.Item, now time.Time) string {
+	if d, ok := watchLiveStint(it, now); ok {
+		return watchFormatDuration(d)
 	}
-	if since.IsZero() {
-		return "—"
+	if it.WorkLast <= 0 {
+		return ""
 	}
-	d := max(now.Sub(since), 0)
+	return watchFormatDuration(it.WorkLast)
+}
+
+// watchWorkTotal is every completed generating stint summed, plus the one in
+// progress so the total advances during a turn rather than jumping when it ends.
+func watchWorkTotal(it daemon.Item, now time.Time) string {
+	d := it.WorkTotal
+	if live, ok := watchLiveStint(it, now); ok {
+		d += live
+	}
+	if d <= 0 {
+		return ""
+	}
+	return watchFormatDuration(d)
+}
+
+// watchLiveStint is the age of a generating stint still in progress. ok is false
+// unless the container is ready, actually working, and carries a real transition
+// mark — the last of which excludes a poll-only container, whose Activity is
+// classified at listing time and has no moment behind it.
+func watchLiveStint(it daemon.Item, now time.Time) (time.Duration, bool) {
+	if it.Status != daemon.StatusReady || it.Activity != daemon.ActivityWorking || it.ActivitySince.IsZero() {
+		return 0, false
+	}
+	return max(now.Sub(it.ActivitySince), 0), true
+}
+
+// watchFormatDuration renders a duration compactly, widening its unit as it
+// grows so the cell stays inside watchDurationWidth.
+func watchFormatDuration(d time.Duration) string {
+	d = max(d, 0)
 	switch {
 	case d < time.Minute:
 		return fmt.Sprintf("%ds", int(d.Seconds()))
@@ -574,22 +806,12 @@ func watchDuration(it daemon.Item, now time.Time) string {
 		}
 		return fmt.Sprintf("%dh", int(d.Hours()))
 	default:
+		// A cumulative total genuinely reaches days, where a bare "1d" would
+		// hide anything up to 23 hours of generating. Carry the hours like the
+		// smaller units carry theirs; "2d02h" still fits watchDurationWidth.
+		if h := int(d.Hours()) % 24; h != 0 {
+			return fmt.Sprintf("%dd%02dh", int(d.Hours())/24, h)
+		}
 		return fmt.Sprintf("%dd", int(d.Hours())/24)
 	}
-}
-
-// watchTruncate clips s to at most w display columns, appending an ellipsis when
-// it cuts. It assumes title text of width-1 runes, which is the common case.
-func watchTruncate(s string, w int) string {
-	if w <= 0 {
-		return ""
-	}
-	if lipgloss.Width(s) <= w {
-		return s
-	}
-	r := []rune(s)
-	for len(r) > 0 && lipgloss.Width(string(r))+1 > w {
-		r = r[:len(r)-1]
-	}
-	return string(r) + "…"
 }

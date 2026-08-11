@@ -67,6 +67,15 @@ func (d *Daemon) api() http.Handler {
 func (d *Daemon) handle_usage(selfID string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		report := d.Usage(r.Context(), selfID)
+		// The host report carries the fleet-wide weekly token tally: adopt the
+		// subscription's weekly reset as this window's boundary (a no-op once
+		// adopted, and the trigger that rolls the totals over when it passes),
+		// then attach the current totals. The per-container relay report (selfID
+		// set, a single scoped login) leaves Weekly zero.
+		if selfID == "" {
+			d.week.anchor(weeklyReset(report))
+			report.Weekly = d.week.get()
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(report)
 	}

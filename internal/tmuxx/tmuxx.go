@@ -146,6 +146,15 @@ func (s *Server) SetWindowName(ctx context.Context, session, name string) error 
 	if out, err := s.run(ctx, "set-window-option", "-t", session, "allow-rename", "off"); err != nil {
 		return fmt.Errorf("tmux set allow-rename: %w: %s", err, out)
 	}
+	return s.RenameWindow(ctx, session, name)
+}
+
+// RenameWindow renames a session's active window without touching the
+// automatic/allow-rename options SetWindowName pins. It is the cheap per-frame
+// call the daemon's title animator makes to pulse a working session's tab
+// glyph, once SetWindowName has already disabled tmux's own renaming; using it
+// there avoids re-issuing those two set-window-option calls on every frame.
+func (s *Server) RenameWindow(ctx context.Context, session, name string) error {
 	if out, err := s.run(ctx, "rename-window", "-t", session, name); err != nil {
 		return fmt.Errorf("tmux rename-window: %w: %s", err, out)
 	}

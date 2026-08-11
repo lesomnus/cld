@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/lesomnus/cld/internal/daemon"
+	"github.com/lesomnus/cld/internal/usage"
 	"github.com/stretchr/testify/require"
 )
 
@@ -38,6 +39,31 @@ func TestUsageRemaining(t *testing.T) {
 }
 
 func TestUsageBarError(t *testing.T) {
-	line := usageBar(daemon.UsageSource{Label: "x", Error: "boom"}, time.Now())
+	line := usageBar(daemon.UsageSource{Label: "x", Error: "boom"}, time.Now(), 0)
 	require.Contains(t, stripANSI(line), "⚠")
+}
+
+// A squeezed budget degrades the bar in order: the percentage goes first, then
+// the gauge shrinks — but the legend and reset time always survive.
+func TestUsageBarDegrades(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	s := daemon.UsageSource{Label: "x", Usage: &usage.Usage{
+		FiveHour: usage.Window{Utilization: 42, ResetsAt: now.Add(2 * time.Hour)},
+		SevenDay: usage.Window{Utilization: 77, ResetsAt: now.Add(48 * time.Hour)},
+	}}
+
+	full := usageBar(s, now, 0)
+	require.Contains(t, stripANSI(full), "42%", "unconstrained keeps the percentage")
+
+	// Enough to drop the percent but not shrink the gauge: no "42%", but the
+	// gauge stays full width.
+	dropped := usageBar(s, now, lipgloss.Width(full)-1)
+	require.NotContains(t, stripANSI(dropped), "42%", "percent is the first thing dropped")
+	require.Contains(t, stripANSI(dropped), "5h", "the legend survives")
+	require.Contains(t, stripANSI(dropped), "wk")
+
+	// A tiny budget shrinks the gauge below full width, but never below the floor.
+	tiny := usageBar(s, now, 24)
+	require.LessOrEqual(t, lipgloss.Width(tiny), lipgloss.Width(dropped))
+	require.Contains(t, stripANSI(tiny), "5h", "the legend still survives")
 }

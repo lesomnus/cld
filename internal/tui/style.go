@@ -1,6 +1,11 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"math"
+	"strconv"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 // The shared palette. cld's accent is a warm pink; secondary text is dimmed.
 // Colors are given as ANSI 256 indices so they degrade gracefully on limited
@@ -46,6 +51,25 @@ func GaugeStyle(pct float64) lipgloss.Style {
 	default:
 		return s.Foreground(green)
 	}
+}
+
+// RateStyle brightens a per-minute token rate: a quiet session's figure sits
+// dim, a fast-generating one glows near-white, so the eye is drawn down the
+// column to whoever is burning tokens right now. The ramp is the ANSI grayscale
+// block (240 → 255) walked on a LOG scale, because token rates span orders of
+// magnitude — a few hundred a minute to tens of thousands — and a linear map
+// would leave everything but the very top pinned at the dim end.
+func RateStyle(perMin float64) lipgloss.Style {
+	s := lipgloss.NewStyle()
+	if perMin < 1 {
+		return s.Foreground(subtle)
+	}
+	// log10(perMin) is 0 at 1/min and 4 at 10k/min; map that span onto the 15
+	// grayscale steps from 240 (dim) to 255 (bright), clamped at both ends.
+	lv := math.Log10(perMin) / 4
+	lv = math.Max(0, math.Min(1, lv))
+	idx := 240 + int(math.Round(lv*15))
+	return s.Foreground(lipgloss.Color(strconv.Itoa(idx)))
 }
 
 // StatusStyle maps a devcontainer status word to a color for list rendering.

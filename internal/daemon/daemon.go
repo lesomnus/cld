@@ -86,6 +86,29 @@ type Item struct {
 	// the pane on every listing and never stored, so there is no moment to mark.
 	StatusSince   time.Time `json:"status_since,omitzero"`
 	ActivitySince time.Time `json:"activity_since,omitzero"`
+	// WorkTotal is how long this session's conversation has spent generating,
+	// summed over every COMPLETED working stint; WorkLast is the duration of the
+	// most recent one. A stint still in progress is deliberately excluded from
+	// both — a listing adds it live from ActivitySince, so the figures advance
+	// second by second while a turn runs without the daemon republishing.
+	//
+	// Both are accumulated in publish() from observed working→not-working
+	// transitions, so they exist only for a container whose activity the daemon
+	// actually sees change: a push container (arch match + remote control). A
+	// poll-only container reclassifies its activity at listing time and never
+	// publishes a transition, so both stay zero rather than showing a fabricated
+	// total. Like the consumption totals they live with the entry and reset when
+	// the container is forgotten.
+	WorkTotal time.Duration `json:"work_total,omitempty"`
+	WorkLast  time.Duration `json:"work_last,omitempty"`
+	// Telemetry is this container's accumulated consumption — tokens, claude's
+	// own cost estimate, and a recent rate — collected from claude's OTLP
+	// exports over the in-container relay (see telemetry.go). Nil when the
+	// container has never reported: telemetry is off, the container is
+	// cross-arch (no relay), or claude has not completed an API request yet.
+	// The nil is load-bearing — a listing shows nothing rather than a zero,
+	// which would falsely claim the container was measured and found idle.
+	Telemetry *Telemetry `json:"telemetry,omitempty"`
 	// Workflows are the Claude Code multi-agent workflow runs of the session's
 	// current transcript, derived by the daemon from the on-disk run journals
 	// (see refresh_workflows). Empty when the session has run none. Ordered
@@ -166,6 +189,11 @@ type entry struct {
 
 	status_since   time.Time // when item.Status last changed; stamped in publish
 	activity_since time.Time // when item.Activity last changed (push path only)
+	// work_total / work_last accumulate completed working stints; see
+	// Item.WorkTotal. Owned by publish(), which is the only place a transition
+	// out of working is observed.
+	work_total time.Duration
+	work_last  time.Duration
 
 	restored       bool
 	session_done   bool   // session was evaluated for the current start generation
@@ -199,11 +227,24 @@ func (e *entry) publish() {
 			e.status_since = now
 		}
 		if prev.Activity != e.item.Activity {
+			// Leaving working closes a stint: bank how long it ran before the
+			// mark moves. This is the only moment the daemon can measure one, so
+			// it is measured here rather than reconstructed later. Guarded on a
+			// non-zero mark because a first-ever publish that already reads
+			// working has no start to subtract from.
+			if prev.Activity == ActivityWorking && !e.activity_since.IsZero() {
+				if d := now.Sub(e.activity_since); d > 0 {
+					e.work_total += d
+					e.work_last = d
+				}
+			}
 			e.activity_since = now
 		}
 	}
 	e.item.StatusSince = e.status_since
 	e.item.ActivitySince = e.activity_since
+	e.item.WorkTotal = e.work_total
+	e.item.WorkLast = e.work_last
 
 	it := e.item
 	e.snap.Store(&it)
@@ -242,8 +283,10 @@ type Daemon struct {
 	proxy    *proxyStore    // per-project opt-in to broker-proxy auth (see proxyStore)
 	broker   *broker.Broker // central subscription-auth broker (see internal/broker)
 
-	usage    *usageCache  // memoizes per-login usage (see usage.go)
-	usage_hc *http.Client // client for the usage endpoint; own timeout, not the broker's
+	usage    *usageCache     // memoizes per-login usage (see usage.go)
+	usage_hc *http.Client    // client for the usage endpoint; own timeout, not the broker's
+	tel      *telemetryStore // per-container consumption from claude's OTLP exports (see telemetry.go)
+	week     *weeklyStore    // fleet-wide token totals, persisted and weekly-reset (see usage_week.go)
 
 	base_ctx context.Context // long-lived; parents watcher/sync goroutines
 	wg       sync.WaitGroup  // tracks worker goroutines
@@ -282,6 +325,8 @@ func New(cfg *config.Config, cli *client.Client, log *slog.Logger) (*Daemon, err
 		broker:   broker.New(broker.FileStore{Path: cfg.BrokerCredentialsPath()}),
 		usage:    newUsageCache(),
 		usage_hc: &http.Client{Timeout: 30 * time.Second},
+		tel:      newTelemetryStore(),
+		week:     newWeeklyStore(cfg.WeeklyUsagePath()),
 		entries:  map[string]*entry{},
 	}, nil
 }
@@ -309,6 +354,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	defer server.Close()
 
 	go d.rel.RefreshLoop(ctx, d.cfg.Release.CheckInterval.Std())
+	go d.run_titler(ctx)
 
 	d.log.Info("serving", slog.String("socket", d.cfg.SocketPath()))
 	err = d.watch_events(ctx)
@@ -500,6 +546,10 @@ func (d *Daemon) remove(e *entry) {
 		delete(d.entries, e.id)
 	}
 	d.mu.Unlock()
+	// Forget the container's consumption totals with it, so the store does not
+	// grow without bound and a container recreated onto this id starts at zero
+	// instead of inheriting its predecessor's numbers.
+	d.tel.drop(e.id)
 	e.mbox.close()
 }
 
@@ -514,7 +564,14 @@ func (d *Daemon) Items() []Item {
 
 	items := make([]Item, 0, len(entries))
 	for _, e := range entries {
-		items = append(items, e.snapshot())
+		it := e.snapshot()
+		// Telemetry lives in its own store rather than the worker-owned entry:
+		// exports arrive on the relay's own goroutine, at their own cadence, and
+		// have nothing to do with the provisioning lifecycle the worker drives.
+		// Attaching it here keeps every listing consumer in sync without putting
+		// a second writer on e.item.
+		it.Telemetry = d.tel.get(e.id)
+		items = append(items, it)
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
 	return items

@@ -1,6 +1,7 @@
 package devc_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/lesomnus/cld/internal/devc"
@@ -200,5 +201,34 @@ func TestWorkspaceFolder(t *testing.T) {
 	t.Run("exact mount source still maps to the destination", func(t *testing.T) {
 		m := []devc.Mount{{Source: "/home/me/proj", Destination: "/workspace"}}
 		require.Equal(t, "/workspace", devc.WorkspaceFolder(nil, "/home/me/proj", m))
+	})
+}
+
+func TestLastSegment(t *testing.T) {
+	t.Run("splits on the same separators as Alias", func(t *testing.T) {
+		require.Equal(t, "cld", devc.LastSegment("lesomnus-cld"))
+		require.Equal(t, "project", devc.LastSegment("my_cool_project"))
+		require.Equal(t, "api", devc.LastSegment("acme.web.api"))
+	})
+	t.Run("a name with no separator is its own segment", func(t *testing.T) {
+		require.Equal(t, "backend", devc.LastSegment("backend"))
+	})
+	t.Run("slugged like Alias, but case is preserved", func(t *testing.T) {
+		// Alias lowercases; LastSegment does not, because it is used to render
+		// the name's own characters rather than to build a handle.
+		require.Equal(t, "Cld", devc.LastSegment("Lesomnus/Cld"))
+	})
+	t.Run("empty when nothing survives", func(t *testing.T) {
+		require.Equal(t, "", devc.LastSegment("///"))
+	})
+	// The pairing watchName relies on: the alias's last character is the last
+	// segment's first character whenever the alias is segment initials.
+	t.Run("pairs with Alias initials", func(t *testing.T) {
+		for _, name := range []string{"lesomnus-cld", "a-very-long-name", "my_cool_project", "acme-web-api"} {
+			alias, seg := devc.Alias(name), devc.LastSegment(name)
+			require.NotEmpty(t, seg)
+			require.Equalf(t, strings.ToLower(seg[:1]), alias[len(alias)-1:],
+				"alias %q must end with the first letter of last segment %q", alias, seg)
+		}
 	})
 }

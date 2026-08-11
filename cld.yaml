@@ -50,7 +50,7 @@ release:
   # Base URL of the Claude Code release channel.
   #base_url: https://downloads.claude.ai/claude-code-releases
   # Release channel to follow: "stable" or "latest".
-  #channel: stable
+  #channel: latest
   # How often to check the channel for a new version.
   #check_interval: 1h
 
@@ -70,6 +70,24 @@ dotfiles:
   # does nothing when you have no ~/.dotfiles. Enabled by default; set to true
   # to turn it off.
   #disabled: false
+
+telemetry:
+  # Collect Claude Code's own OpenTelemetry consumption metrics from each
+  # session — token counts and its cost estimate — and show them in `cld ls`.
+  # The daemon IS the collector: it serves an OTLP receiver over the same
+  # in-container relay as the control API, so nothing leaves your machine. The
+  # totals are held in memory only; they reset when the daemon restarts or a
+  # container is removed. Needs the relay, so it is unavailable on a container
+  # whose architecture differs from the host. Enabled by default; set to true
+  # to turn it off.
+  #disabled: false
+
+  # How often each session flushes its metrics to the daemon. Claude Code's own
+  # default is 60s, too laggy for a listing. Note that the counters only advance
+  # when an API request COMPLETES, so a shorter interval cannot make the numbers
+  # move during a long generation — it only shortens the lag after a turn ends,
+  # and below a second or two it is pure overhead.
+  #export_interval: 5s
 
 sync:
   # Delay after a change before conversation state is copied out.

@@ -124,6 +124,26 @@ func Alias(name string) string {
 	return s[:aliasShort]
 }
 
+// LastSegment returns the final segment of a name under the SAME split rule
+// Alias uses ("-", "_", "."). It lives next to Alias so the two cannot drift:
+// a caller pairing them — rendering an alias merged into the tail of the name
+// it was derived from — depends on both agreeing on where a segment ends.
+// Returns the name unchanged when it has no separator, and "" for a name that
+// slugs to nothing.
+func LastSegment(name string) string {
+	s := Slug(name)
+	if s == "" {
+		return ""
+	}
+	segs := strings.FieldsFunc(s, func(r rune) bool {
+		return r == '-' || r == '_' || r == '.'
+	})
+	if len(segs) == 0 {
+		return s
+	}
+	return segs[len(segs)-1]
+}
+
 // crockfordLower is Crockford's base32 alphabet in lowercase: the digits and
 // letters minus i, l, o, u, so a fingerprint never reads as an ambiguous or
 // unintended word.

@@ -10,6 +10,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/lesomnus/cld/internal/daemon"
 	"github.com/lesomnus/cld/internal/tui"
 	"github.com/lesomnus/cld/internal/usage"
@@ -137,22 +138,56 @@ func usageRemaining(reset, now time.Time) string {
 	}
 }
 
+// usageGaugeCells is the gauge width at full size; usageGaugeMinCells the
+// floor it shrinks to when the line is squeezed.
+const (
+	usageGaugeCells    = 8
+	usageGaugeMinCells = 2
+)
+
 // usageBar is one source's bottom-of-screen line for `cld watch`: the 5-hour and
-// weekly gauges, each with its percentage and time-to-reset, and no account
-// name. Right-alignment is the caller's job.
-func usageBar(s daemon.UsageSource, now time.Time) string {
+// weekly gauges, each with its time-to-reset, and no account name. It fits
+// itself into budget cells (<= 0 means unconstrained) by degrading in the order
+// the layout can best spare: first it drops the percentage that prefixes each
+// gauge, then it shrinks the gauges themselves from usageGaugeCells down to
+// usageGaugeMinCells. Right-alignment is the caller's job.
+func usageBar(s daemon.UsageSource, now time.Time, budget int) string {
 	if s.Error != "" {
 		return tui.StatusStyle("failed").Render("⚠ usage unavailable")
 	}
-	// Layout per window: the usage percentage on the LEFT of the gauge, then the
-	// gauge, then its legend (5h/wk) and time-to-reset on the RIGHT. Every field
-	// is fixed-width — "NNN%" (4), gauge (8), the 2-char legend, and the reset
-	// time padded to 5 — so the two segments stay column-aligned under the
-	// right-aligned line as the numbers and durations change.
+	// Attempts richest-first: the full form (percent + 8-cell gauge), then the
+	// same without the percent, then progressively narrower gauges. The first
+	// that fits budget wins; if none do, the smallest is returned anyway.
+	type form struct {
+		pct   bool
+		cells int
+	}
+	forms := []form{{true, usageGaugeCells}}
+	for c := usageGaugeCells; c >= usageGaugeMinCells; c-- {
+		forms = append(forms, form{false, c})
+	}
+	var line string
+	for _, f := range forms {
+		line = usageBarForm(s, now, f.pct, f.cells)
+		if budget <= 0 || lipgloss.Width(line) <= budget {
+			break
+		}
+	}
+	return line
+}
+
+// usageBarForm renders the bar at a fixed richness: showPct toggles the leading
+// percentage, cells sizes each gauge. The legend (5h/wk) and time-to-reset are
+// always kept — they are what makes the bar legible at a glance.
+func usageBarForm(s daemon.UsageSource, now time.Time, showPct bool, cells int) string {
 	seg := func(tag string, w usage.Window) string {
-		return tui.HelpStyle.Render(fmt.Sprintf("%3.0f%% ", w.Utilization)) +
-			usageGauge(w.Utilization, 8) +
-			tui.HelpStyle.Render(fmt.Sprintf(" %s %5s", tag, usageRemaining(w.ResetsAt, now)))
+		var b strings.Builder
+		if showPct {
+			b.WriteString(tui.HelpStyle.Render(fmt.Sprintf("%3.0f%% ", w.Utilization)))
+		}
+		b.WriteString(usageGauge(w.Utilization, cells))
+		b.WriteString(tui.HelpStyle.Render(fmt.Sprintf(" %s %5s", tag, usageRemaining(w.ResetsAt, now))))
+		return b.String()
 	}
 	return seg("5h", s.Usage.FiveHour) + tui.HelpStyle.Render("    ") + seg("wk", s.Usage.SevenDay)
 }

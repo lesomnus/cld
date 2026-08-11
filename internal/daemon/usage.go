@@ -40,6 +40,11 @@ type UsageSource struct {
 // session to read a token from.
 type UsageReport struct {
 	Sources []UsageSource `json:"sources"`
+	// Weekly is the daemon's own fleet-wide token tally for the current weekly
+	// window (see weeklyStore) — the "this week" figure at the bottom of `cld
+	// watch`. Only the host-facing report carries it; the per-container relay
+	// report leaves it zero.
+	Weekly WeeklyUsage `json:"weekly,omitzero"`
 }
 
 // usageEntry is a cached per-source result, stamped with when it was fetched so

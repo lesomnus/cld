@@ -44,13 +44,14 @@ type Config struct {
 	// knob — it is wired in by `cld install` / docker-compose.
 	HostHome string `yaml:"-"`
 
-	Auth     AuthConfig     `yaml:"auth"`
-	Release  ReleaseConfig  `yaml:"release"`
-	Gh       GhConfig       `yaml:"gh"`
-	Dotfiles DotfilesConfig `yaml:"dotfiles"`
-	Sync     SyncConfig     `yaml:"sync"`
-	Up       UpConfig       `yaml:"up"`
-	Install  InstallConfig  `yaml:"install"`
+	Auth      AuthConfig      `yaml:"auth"`
+	Release   ReleaseConfig   `yaml:"release"`
+	Gh        GhConfig        `yaml:"gh"`
+	Dotfiles  DotfilesConfig  `yaml:"dotfiles"`
+	Telemetry TelemetryConfig `yaml:"telemetry"`
+	Sync      SyncConfig      `yaml:"sync"`
+	Up        UpConfig        `yaml:"up"`
+	Install   InstallConfig   `yaml:"install"`
 
 	Otel OtelConfig
 }

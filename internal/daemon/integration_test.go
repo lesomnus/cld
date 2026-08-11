@@ -774,13 +774,15 @@ func TestNameKeying(t *testing.T) {
 		require.NoError(t, err)
 		require.True(t, has)
 		// ...while the window name (which drives the terminal tab via
-		// set-titles-string) reads the terse display label.
+		// set-titles-string) reads the terse display label, prefixed with the
+		// glyph that marks the tab as a claude session (see windowName). At rest
+		// the glyph is the static titleGlyph; run_titler pulses it while working.
 		out, err := exec.Command(
 			"tmux", "-S", cfg.TmuxSocketPath(),
 			"display-message", "-p", "-t", devc.SessionName("acme-api"), "#W",
 		).Output()
 		require.NoError(t, err)
-		require.Equal(t, "api", strings.TrimSpace(string(out)))
+		require.Equal(t, windowName(titleGlyph, "api"), strings.TrimSpace(string(out)))
 	})
 	t.Run("backup is keyed by the full name, not the path", func(t *testing.T) {
 		// Backups follow the full namespaced identity, so a sync must land under

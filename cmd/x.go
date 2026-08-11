@@ -33,6 +33,7 @@ func NewCmdX() *xli.Command {
 			new_cmd_x_agent(),
 			new_cmd_x_api(),
 			new_cmd_x_proxy(),
+			new_cmd_x_otlp(),
 			new_cmd_x_activity(),
 		},
 		Handler: xli.RequireSubcommand(),
@@ -203,6 +204,39 @@ func new_cmd_x_proxy() *xli.Command {
 	return &xli.Command{
 		Name:  "proxy",
 		Brief: "serve the daemon auth-proxy relay on a loopback TCP port, over this exec's stdio",
+		Args: arg.Args{
+			&arg.String{Name: "addr", Brief: "loopback TCP address to listen on (host:port)"},
+		},
+		Handler: xli.OnRun(func(ctx context.Context, cmd *xli.Command, next xli.Next) error {
+			addr := arg.MustGet[string](cmd, "addr")
+
+			ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+			defer stop()
+
+			ln, err := net.Listen("tcp", addr)
+			if err != nil {
+				return z.Err(err, "listen")
+			}
+			err = agentx.Serve(ctx, ln, os.Stdin, os.Stdout)
+			if err == context.Canceled {
+				return nil
+			}
+			return err
+		}),
+	}
+}
+
+// new_cmd_x_otlp serves the container-side end of the daemon's OTLP relay: it
+// listens on a loopback TCP address and multiplexes each connection over this
+// exec's stdio to the daemon, which bridges it to an in-process OTLP metrics
+// receiver scoped to this container. claude reaches it via
+// OTEL_EXPORTER_OTLP_ENDPOINT, so its consumption metrics terminate at the
+// daemon instead of leaving the machine. TCP (not a unix socket) because that
+// endpoint is an http:// URL — identical shape to `cld x proxy`.
+func new_cmd_x_otlp() *xli.Command {
+	return &xli.Command{
+		Name:  "otlp",
+		Brief: "serve the daemon OTLP metrics relay on a loopback TCP port, over this exec's stdio",
 		Args: arg.Args{
 			&arg.String{Name: "addr", Brief: "loopback TCP address to listen on (host:port)"},
 		},

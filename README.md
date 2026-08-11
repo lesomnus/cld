@@ -38,8 +38,12 @@ Then bring the daemon up and attach:
 # Run the daemon as a container on your Docker. It mounts the Docker socket,
 # your ~/.cache/cld + ~/.local/share/cld, and your home read-only (so it can
 # read ~/.dotfiles), and runs as your user so the sockets it creates are yours
-# (which is what lets the host `cld` reach it). Re-run with `--recreate` to
-# replace it (e.g. to upgrade); `cld uninstall` removes it.
+# (which is what lets the host `cld` reach it). ~/.cache/cld holds only
+# regenerable things (sockets, cached binaries); ~/.local/share/cld is the
+# daemon's durable state — per-project conversation backups and logins, the
+# shared broker login, proxy-mode prefs, and the running weekly usage tally — so
+# that survives a restart or `--recreate`. Re-run with `--recreate` to replace
+# it (e.g. to upgrade); `cld uninstall` removes it.
 $ cld install
 
 # The daemon watches Docker events and provisions every devcontainer it sees
@@ -250,8 +254,10 @@ day in `cld up`/`cld it`/`cld ls`/`cld down`.
 - **`cld ls`** — list the devcontainers the daemon manages, with each one's
   `NAME`, `ALIAS`, `CONTAINER`, `STATUS` (`provisioning` → `ready`, or
   `session-ended` / `stopped` / `failed`), claude `VERSION`, and `LOCAL FOLDER`
-  (the project's path on the host, shown as `~` when under your home). Use it to
-  see what's running and to get the names for `cld it`/`cld down`.
+  (the project's path on the host, shown as `~` when under your home). It also
+  shows what each session has consumed — `COST`, `TOKENS`, and a recent
+  `RATE` — see [Usage and cost](#usage-and-cost). Use it to see what's running
+  and to get the names for `cld it`/`cld down`.
 - **`cld down <name>`** — take a final backup, then stop and remove the
   devcontainer (for a Compose devcontainer, the whole project, minus any sidecar
   marked `cld.ignore`). Named volumes and the host-side conversation backup are
@@ -277,7 +283,7 @@ day in `cld up`/`cld it`/`cld ls`/`cld down`.
 - **`cld update [name]`** — reinstall Claude Code into a devcontainer and restart
   its session so the new binary takes effect. The daemon otherwise only re-resolves
   the release channel on its own schedule (`release.check_interval`, default `1h`)
-  and follows the configured `release.channel` (`stable` by default), so a freshly
+  and follows the configured `release.channel` (`latest` by default), so a freshly
   recreated container gets whatever version the daemon last cached — not necessarily
   the newest. `cld update` forces a fresh channel check, re-injects the binary, and
   recreates the session (which detaches you; reattach with `cld it`). With no `name`
@@ -317,12 +323,52 @@ You won't run these by hand; the daemon and the attach clients do:
 
 - **`cld agent export`** — serves your host ssh-agent on the cld socket so the
   daemon can relay it into sessions; `cld it`/`cld up` start it automatically.
-- **`cld x …`** (`exec`, `watch`, `agent`, `api`) — in-container / tmux-pane
-  helpers the daemon drives over `docker exec`: running claude in a pane,
-  watching files for backup, and relaying the ssh-agent and the control API into
-  the container (the last is what makes in-container `cld it` work).
+- **`cld x …`** (`exec`, `watch`, `agent`, `api`, `proxy`, `otlp`) —
+  in-container / tmux-pane helpers the daemon drives over `docker exec`: running
+  claude in a pane, watching files for backup, and relaying the ssh-agent, the
+  control API, the auth proxy and the telemetry receiver into the container (the
+  control API is what makes in-container `cld it` work).
 
 A global `--config <path>` overrides which `cld.yaml` is loaded.
+
+## Usage and cost
+
+Two different measurements, which will not agree — they are counting different
+things, and that is expected:
+
+- **`cld usage`** — your Claude subscription's rate-limit windows: how much of
+  the 5-hour and weekly quota is spent, and when each resets. This is an
+  **account-wide** figure straight from Anthropic, so it includes claude run
+  anywhere else on the account, not just in cld's containers. `cld watch` shows
+  the same gauges in its footer.
+- **`cld ls`** — what **each container** has consumed: `COST`, `TOKENS`, and a
+  recent `RATE` (tokens/min over a trailing 5-minute window). These come from
+  Claude Code's own OpenTelemetry metrics. `cld watch` carries the same two
+  counts per row under the compact headers `#` (tokens) and `#/m` (rate),
+  dropping the cost to keep the live view narrow; both columns collapse
+  entirely when nothing has reported.
+
+For the per-container numbers **the daemon is the collector**. It serves an OTLP
+receiver on each container's loopback over the same `docker exec` relay as the
+control API, and points that session's claude at it. Nothing leaves your
+machine, and the daemon attributes every export to the container whose relay it
+arrived on rather than trusting the payload — so one project can never write
+into another's totals. The totals live in memory: they reset when the daemon
+restarts or the container is removed.
+
+Two caveats worth knowing:
+
+- **The cost is claude's own estimate**, derived from published per-model
+  pricing — not a billed amount. On a subscription plan it is a notional
+  "what this would have cost through the API" figure.
+- **The numbers step, they do not flow.** Claude Code increments the counters
+  when an API request *completes*, so a session mid-generation adds nothing
+  until the turn ends. Shortening `telemetry.export_interval` only reduces the
+  lag after that point.
+
+Collection needs the in-container relay, so it is unavailable on a container
+whose architecture differs from the host — those rows show blank rather than
+zero. Turn it off entirely with `telemetry.disabled: true`.
 
 ### Shell completion
 

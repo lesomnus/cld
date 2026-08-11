@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 
@@ -16,7 +17,7 @@ import (
 	"golang.org/x/term"
 )
 
-var lsHeaders = []string{"NAME", "ALIAS", "CONTAINER", "STATUS", "VERSION", "LOCAL FOLDER", "ACTIVITY", "TITLE"}
+var lsHeaders = []string{"NAME", "ALIAS", "CONTAINER", "STATUS", "VERSION", "LOCAL FOLDER", "ACTIVITY", "COST", "TOKENS", "RATE", "TITLE"}
 
 func NewCmdLs() *xli.Command {
 	return &xli.Command{
@@ -52,7 +53,8 @@ func NewCmdLs() *xli.Command {
 				if it.Status == daemon.StatusReady {
 					activity = string(it.Activity)
 				}
-				rows[i] = []string{displayName(it), it.Alias, id, string(it.Status), it.Version, abbreviate_home(it.LocalFolder), activity, it.Title}
+				cost, tokens, rate := telemetryCells(it.Telemetry)
+				rows[i] = []string{displayName(it), it.Alias, id, string(it.Status), it.Version, abbreviate_home(it.LocalFolder), activity, cost, tokens, rate, it.Title}
 			}
 
 			// --wide always prints every column as plain tab-separated text, no
@@ -223,10 +225,88 @@ func cardState(it daemon.Item) string {
 
 	icon, style := activityLook(it.Activity)
 	s := style.Render(icon + " " + string(it.Activity))
+	// Consumption sits between the activity and the title, not after it: a
+	// title is free-form and can run to the edge of the terminal, which would
+	// push the numbers off screen exactly when a session is busy enough to be
+	// worth watching.
+	if tel := telemetryLabel(it.Telemetry); tel != "" {
+		s += "  " + tel
+	}
 	if it.Title != "" {
 		s += "  " + tui.HelpStyle.Render(it.Title)
 	}
 	return s
+}
+
+// telemetryCells renders a container's consumption as the three plain listing
+// columns — cost, tokens, rate. All three are blank for a container that never
+// reported (see daemon.Item.Telemetry), so a script can tell "not measured"
+// from a measured zero.
+func telemetryCells(t *daemon.Telemetry) (cost, tokens, rate string) {
+	if t == nil {
+		return "", "", ""
+	}
+	return formatCost(t.CostUSD), formatTokens(t.Tokens), formatRate(t.TokensPerMin)
+}
+
+// telemetryLabel is the card form of the same three figures, joined by middots
+// and dimmed so they read as an annotation on the activity rather than
+// competing with it. Empty when the container never reported; the rate is
+// dropped once it falls to zero, since a resting session showing a "~0" is
+// noise the activity word already conveys.
+//
+// Unlike the column layouts, a card has no header to carry the rate's unit —
+// and the total and the rate are both token counts, so without it the two read
+// as the same measurement twice. The "/m" is therefore appended HERE rather
+// than baked into formatRate (see rateUnit).
+func telemetryLabel(t *daemon.Telemetry) string {
+	if t == nil {
+		return ""
+	}
+	parts := []string{formatCost(t.CostUSD), formatTokens(t.Tokens)}
+	if r := formatRate(t.TokensPerMin); r != "" {
+		parts = append(parts, r+rateUnit)
+	}
+	return tui.HelpStyle.Render(strings.Join(parts, " · "))
+}
+
+// rateUnit spells the rate's denominator for layouts with no column header to
+// carry it. The tabular views put it in the header instead (see the ls RATE
+// column and watchRateHeader), keeping the cells themselves as narrow as the
+// numbers they hold.
+const rateUnit = "/m"
+
+// formatCost renders claude's own cost estimate. Always two decimals: the
+// figure is an estimate (and notional on a subscription plan), so a stable,
+// unrounded-looking form is less likely to be read as a billed amount than a
+// number that changes shape as it grows.
+func formatCost(usd float64) string {
+	return fmt.Sprintf("$%.2f", usd)
+}
+
+// formatTokens abbreviates a token count to three significant figures at most —
+// 938, 12.3k, 1.2M — so the column stays narrow and comparable down the list.
+func formatTokens(n int64) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%.1fk", float64(n)/1_000)
+	default:
+		return strconv.FormatInt(n, 10)
+	}
+}
+
+// formatRate renders recent consumption as a bare token count, prefixed "~"
+// because it is an average over a trailing window rather than an instantaneous
+// reading. The per-minute denominator is NOT included: it belongs in the column
+// header, so the cells stay as narrow as their numbers. A layout with no header
+// appends rateUnit itself. Empty at zero so a quiet session shows nothing.
+func formatRate(perMin float64) string {
+	if perMin < 1 {
+		return ""
+	}
+	return "~" + formatTokens(int64(perMin))
 }
 
 // activityLook maps a conversation activity to its bullet and style: a bright

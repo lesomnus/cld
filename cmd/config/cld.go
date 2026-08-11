@@ -80,6 +80,49 @@ func (c AuthConfig) ShareConfigEnabled() bool {
 	return c.ShareConfig == nil || *c.ShareConfig
 }
 
+type TelemetryConfig struct {
+	// Disabled turns off collecting Claude Code's own OpenTelemetry consumption
+	// metrics (token counts and its cost estimate) from each session. Off by
+	// default (zero value = enabled): the daemon points each container's claude
+	// at an OTLP receiver it serves over the same in-container relay as the
+	// control API, and `cld ls` shows the totals.
+	//
+	// Nothing leaves the machine. The daemon terminates the exports itself and
+	// keeps the totals in memory — they are not persisted and do not survive a
+	// restart. Collection needs the relay, so it is silently unavailable on a
+	// cross-arch container (where cld's own binary cannot run), exactly like
+	// ssh-agent forwarding and the control API.
+	Disabled bool `yaml:"disabled"`
+
+	// ExportInterval is how often each session flushes its metrics to the
+	// daemon. Defaults to TelemetryExportInterval. Claude Code increments the
+	// counters per API request, so a shorter interval cannot make the numbers
+	// live during a long generation — it only shortens the lag after a turn
+	// ends. Below a second or two it is pure overhead.
+	ExportInterval Duration `yaml:"export_interval"`
+}
+
+// TelemetryExportInterval is the default metric export interval pushed into
+// each session (OTEL_METRIC_EXPORT_INTERVAL). Claude Code's own default is 60s,
+// far too laggy for a listing; 5s puts the numbers up about as soon as a turn
+// finishes, which is the floor that matters given the counters only advance per
+// completed API request.
+const TelemetryExportInterval = 5 * time.Second
+
+// Enabled reports whether consumption metrics are collected (default true).
+func (c TelemetryConfig) Enabled() bool { return !c.Disabled }
+
+// ExportIntervalOrDefault is the configured export interval, or
+// TelemetryExportInterval when unset. A non-positive value is treated as unset
+// rather than as "never export", which would silently disable collection while
+// still claiming to be enabled.
+func (c TelemetryConfig) ExportIntervalOrDefault() time.Duration {
+	if d := c.ExportInterval.Std(); d > 0 {
+		return d
+	}
+	return TelemetryExportInterval
+}
+
 type UpConfig struct {
 	// Image used to run the devcontainer CLI when no `devcontainer` binary is
 	// available on the host.
@@ -160,7 +203,7 @@ func (c *Config) evaluateCld() error {
 		c.Release.BaseURL = "https://downloads.claude.ai/claude-code-releases"
 	}
 	if c.Release.Channel == "" {
-		c.Release.Channel = "stable"
+		c.Release.Channel = "latest"
 	}
 	if c.Release.CheckInterval == 0 {
 		c.Release.CheckInterval = Duration(time.Hour)
@@ -270,6 +313,14 @@ func (c *Config) ProjectBackupDir(key string) string {
 // under DataDir so the choice survives daemon and container restarts.
 func (c *Config) ProxyStateDir() string {
 	return filepath.Join(c.DataDir, "proxy")
+}
+
+// WeeklyUsagePath is where the daemon persists the fleet-wide running token
+// totals shown at the bottom of `cld watch` (see daemon.weeklyStore). It lives
+// under DataDir so the week's count survives a daemon restart, and is reset only
+// when the subscription's weekly window rolls over.
+func (c *Config) WeeklyUsagePath() string {
+	return filepath.Join(c.DataDir, "usage.json")
 }
 
 // BrokerCredentialsPath is where the auth broker persists the single `/login`

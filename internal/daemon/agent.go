@@ -252,6 +252,34 @@ func (d *Daemon) broker_session(e *entry) bool {
 		d.proxy.get(d.backup_key(e)) && d.broker.HasCredentials()
 }
 
+// otlpListenAddr is the loopback address the OTLP metrics receiver listens on
+// INSIDE each container; claude reaches it via OTEL_EXPORTER_OTLP_ENDPOINT.
+// Like proxyListenAddr, a fixed port is safe because each container has its own
+// network namespace.
+const otlpListenAddr = "127.0.0.1:49328"
+
+// relay_otlp exposes an OTLP metrics receiver inside the container, so claude's
+// own telemetry (token counts and its cost estimate) lands in the daemon rather
+// than leaving the machine. Same transport as relay_api/relay_proxy — a pipe
+// listener bridged over a `docker exec` — with the per-container OTLP receiver
+// as the handler.
+//
+// Identity is bound here, not taken from the payload: the receiver is built for
+// this container's id, so its exports can only ever add to its own totals.
+func (d *Daemon) relay_otlp(ctx context.Context, e *entry, id string) {
+	if !d.cfg.Telemetry.Enabled() {
+		return
+	}
+	ln := new_pipe_listener()
+	srv := &http.Server{Handler: d.otlp_api(id)}
+	go srv.Serve(ln)
+	defer srv.Close()
+	defer ln.Close()
+
+	d.relay(ctx, e, id, "otlp",
+		[]string{path.Join(install_dir, "cld"), "x", "otlp", otlpListenAddr}, ln.dial)
+}
+
 // relay_proxy exposes the daemon's auth proxy inside the container: an
 // in-process reverse proxy that rewrites Authorization with the current
 // subscription access token and forwards to api.anthropic.com. The container

@@ -74,11 +74,9 @@ func completeEditTargets() arg.Handler[string] {
 	})
 }
 
-// editUserDefault runs the kubectl-edit flow against a single host file: copy
-// the current content (or a template when it does not exist yet) into a temp
-// file, open the user's editor on it, and — only if it changed and, for a JSON
-// object file, still parses — write it back atomically. An unchanged buffer or a
-// non-zero editor exit (vim's :cq) cancels without touching the file.
+// editUserDefault opens one of cld's user-default Claude Code files (settings.json
+// or CLAUDE.md) in the editor, seeding a template when the file does not exist
+// yet and validating settings.json as a JSON object before saving.
 func editUserDefault(ctx context.Context, cmd *xli.Command, path string, t editTarget) error {
 	orig, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -87,7 +85,28 @@ func editUserDefault(ctx context.Context, cmd *xli.Command, path string, t editT
 		return err
 	}
 
-	tmp, err := os.CreateTemp("", "cld-edit-*"+t.ext)
+	var validate func([]byte) error
+	if t.object {
+		validate = validSettingsObject
+	}
+	return editInEditor(ctx, cmd, path, orig, t.ext, validate, "is not a valid JSON object", func() {
+		fmt.Fprintln(cmd.ErrWriter, "cld: it applies to new or recreated sessions — run `cld it --new <name>` or `cld update` to pick it up now")
+	})
+}
+
+// editInEditor runs the kubectl-edit flow against a single file: copy orig (the
+// current content or a template) into a temp file, open the user's editor on it,
+// and — only if it changed and passes validate — write it back atomically. An
+// unchanged buffer or a non-zero editor exit (vim's :cq) cancels without
+// touching the file.
+//
+// validate may be nil to accept any content; when it rejects an edit, invalidDesc
+// labels the failure in the message ("is not a valid JSON object"). If validate
+// keeps failing on an unchanged buffer — nano always exits 0, so the editor
+// cannot signal a cancel — it gives up rather than loop forever, preserving the
+// buffer so no work is lost. onSaved, if set, prints extra guidance after a write.
+func editInEditor(ctx context.Context, cmd *xli.Command, path string, orig []byte, ext string, validate func([]byte) error, invalidDesc string, onSaved func()) error {
+	tmp, err := os.CreateTemp("", "cld-edit-*"+ext)
 	if err != nil {
 		return err
 	}
@@ -101,10 +120,10 @@ func editUserDefault(ctx context.Context, cmd *xli.Command, path string, t editT
 		return err
 	}
 
+	name := filepath.Base(path)
 	// last is the previous attempt's content: when an invalid edit is left
-	// unchanged across two rounds, the editor cannot signal a cancel (e.g. nano
-	// always exits 0), so give up rather than loop forever — preserving the
-	// buffer so no work is lost.
+	// unchanged across two rounds, the editor cannot signal a cancel, so give up
+	// rather than loop forever.
 	last := orig
 	for {
 		if err := editorx.Open(ctx, tmpPath); err != nil {
@@ -125,12 +144,12 @@ func editUserDefault(ctx context.Context, cmd *xli.Command, path string, t editT
 			return nil
 		}
 
-		if t.object {
-			if verr := validSettingsObject(edited); verr != nil {
-				fmt.Fprintf(cmd.ErrWriter, "cld: %s is not a valid JSON object: %v\n", t.name, verr)
+		if validate != nil {
+			if verr := validate(edited); verr != nil {
+				fmt.Fprintf(cmd.ErrWriter, "cld: %s %s: %v\n", name, invalidDesc, verr)
 				if bytes.Equal(edited, last) {
-					saved := preserveBuffer(edited, t.ext)
-					return fmt.Errorf("edit aborted; %s not saved. Your edits are at %s", t.name, saved)
+					saved := preserveBuffer(edited, ext)
+					return fmt.Errorf("edit aborted; %s not saved. Your edits are at %s", name, saved)
 				}
 				last = edited
 				continue
@@ -141,7 +160,9 @@ func editUserDefault(ctx context.Context, cmd *xli.Command, path string, t editT
 			return err
 		}
 		fmt.Fprintf(cmd.ErrWriter, "cld: updated %s\n", path)
-		fmt.Fprintln(cmd.ErrWriter, "cld: it applies to new or recreated sessions — run `cld it --new <name>` or `cld update` to pick it up now")
+		if onSaved != nil {
+			onSaved()
+		}
 		return nil
 	}
 }

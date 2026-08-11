@@ -207,6 +207,10 @@ func (d *Daemon) ensure_(ctx context.Context, e *entry) error {
 			// Expose the auth proxy so a broker session authenticates through it
 			// (no-op when the broker is inactive).
 			go d.relay_proxy(wctx, e, id)
+			// Receive claude's own consumption metrics (no-op when telemetry is
+			// disabled). Cross-arch containers get none: like every other relay
+			// this needs cld's binary to run in the container.
+			go d.relay_otlp(wctx, e, id)
 		} else {
 			go d.poll_container(wctx, e)
 		}
@@ -780,13 +784,18 @@ func (d *Daemon) ensure_session(ctx context.Context, e *entry, id string) error 
 	}
 	// The session name is the stable identity (kept full for a namespaced
 	// project), so point the window name — and thus the terminal tab — at the
-	// terse display label instead. Best-effort: a cosmetic tab name must not fail
-	// provisioning.
-	if tab := e.item.Display; tab != "" {
-		if err := d.tmux.SetWindowName(ctx, name, tab); err != nil {
-			d.log.Warn("set window name",
-				slog.String("name", name), slog.String("error", err.Error()))
-		}
+	// terse display label instead, prefixed with the glyph that marks the tab as
+	// a claude session (run_titler animates that glyph afterwards). Setting it
+	// here shows the prefix from the first frame and, as a side effect, pins
+	// off tmux's own renaming so the animator's renames are never clobbered.
+	// Best-effort: a cosmetic tab name must not fail provisioning.
+	tab := e.item.Display
+	if tab == "" {
+		tab = e.item.Name
+	}
+	if err := d.tmux.SetWindowName(ctx, name, windowName(titleGlyph, tab)); err != nil {
+		d.log.Warn("set window name",
+			slog.String("name", name), slog.String("error", err.Error()))
 	}
 	// Bind the session's split/new-window keys to a shell inside this same
 	// container, so an extra pane lands in the container, not the host tmux
@@ -879,7 +888,41 @@ func (d *Daemon) session_env(e *entry) []string {
 			"ENABLE_TOOL_SEARCH=true",
 		)
 	}
+	// Point claude's OpenTelemetry exporter at the receiver relay_otlp serves on
+	// the container's loopback, so `cld ls` can show what the session consumed.
+	// Only when the relay actually runs (arch match), else the exporter would
+	// retry against a dead port for the life of the session.
+	if d.telemetry_session(e) {
+		env = append(env,
+			"CLAUDE_CODE_ENABLE_TELEMETRY=1",
+			// Metrics only: cld reads the two consumption counters and has no
+			// use for logs or traces, which would otherwise carry prompt and
+			// tool metadata across the relay for nothing.
+			"OTEL_METRICS_EXPORTER=otlp",
+			"OTEL_LOGS_EXPORTER=none",
+			"OTEL_TRACES_EXPORTER=none",
+			// JSON, not protobuf: it is what internal/otlpx decodes, which is
+			// why the daemon needs no protobuf runtime to be the collector.
+			"OTEL_EXPORTER_OTLP_PROTOCOL=http/json",
+			"OTEL_EXPORTER_OTLP_ENDPOINT=http://"+otlpListenAddr,
+			fmt.Sprintf("OTEL_METRIC_EXPORT_INTERVAL=%d", d.cfg.Telemetry.ExportIntervalOrDefault().Milliseconds()),
+			// The daemon attributes every export by the relay it arrived on, so
+			// the identifying resource attributes are redundant. Dropping them
+			// keeps the account uuid, account id and session id out of the
+			// exports entirely rather than receiving and discarding them.
+			"OTEL_METRICS_INCLUDE_SESSION_ID=false",
+			"OTEL_METRICS_INCLUDE_ACCOUNT_UUID=false",
+		)
+	}
 	return env
+}
+
+// telemetry_session reports whether this session should export its consumption
+// metrics to the daemon. It needs the feature enabled and an arch match — the
+// receiver rides the same in-container relay as the control API and the auth
+// proxy, which only runs when cld's own binary can execute in the container.
+func (d *Daemon) telemetry_session(e *entry) bool {
+	return e.arch_ok && d.cfg.Telemetry.Enabled()
 }
 
 // recreate_session forces a fresh session for a container whose session the

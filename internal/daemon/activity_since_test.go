@@ -46,3 +46,49 @@ func TestPublishStampsTransitions(t *testing.T) {
 	require.True(t, s3.StatusSince.Equal(s2.StatusSince), "steady status leaves StatusSince")
 	require.True(t, s3.ActivitySince.After(s2.ActivitySince), "activity change moves ActivitySince")
 }
+
+// TestPublishAccumulatesWorkingTime verifies publish() banks a working stint at
+// the moment the conversation stops generating — the only point the daemon can
+// measure one — and leaves it alone otherwise.
+func TestPublishAccumulatesWorkingTime(t *testing.T) {
+	d := &Daemon{entries: map[string]*entry{}}
+	e := d.get_or_create("cid")
+
+	e.item.Status = StatusReady
+	e.item.Activity = ActivityIdle
+	e.publish()
+	require.Zero(t, e.snapshot().WorkTotal, "nothing banked before any generating")
+	require.Zero(t, e.snapshot().WorkLast)
+
+	// Start generating. Nothing is banked yet: the stint is still open, and a
+	// listing adds it live from ActivitySince.
+	e.item.Activity = ActivityWorking
+	e.publish()
+	require.Zero(t, e.snapshot().WorkTotal, "an open stint is not banked")
+
+	// Finish it. The elapsed time lands in both figures.
+	time.Sleep(5 * time.Millisecond)
+	e.item.Activity = ActivityWaiting
+	e.publish()
+	first := e.snapshot()
+	require.Positive(t, first.WorkTotal, "the finished stint is banked")
+	require.Equal(t, first.WorkTotal, first.WorkLast, "the only stint is also the last one")
+
+	// Time spent NOT generating must not accrue, no matter how many unrelated
+	// republishes happen while waiting.
+	time.Sleep(5 * time.Millisecond)
+	e.item.Title = "some title"
+	e.publish()
+	require.Equal(t, first.WorkTotal, e.snapshot().WorkTotal, "waiting does not accrue")
+
+	// A second stint adds to the total and replaces the last.
+	e.item.Activity = ActivityWorking
+	e.publish()
+	time.Sleep(5 * time.Millisecond)
+	e.item.Activity = ActivityWaiting
+	e.publish()
+	second := e.snapshot()
+	require.Greater(t, second.WorkTotal, first.WorkTotal, "the total accumulates across stints")
+	require.NotEqual(t, second.WorkTotal, second.WorkLast, "the last stint is only the most recent one")
+	require.Positive(t, second.WorkLast)
+}
