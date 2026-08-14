@@ -129,7 +129,7 @@ func TestTelemetryRelayE2E(t *testing.T) {
 		d.mu.Unlock()
 		require.NotNil(t, e)
 
-		env := envMap(d.session_env(e))
+		env := envMap(d.session_env(e).Overrides())
 		require.Equal(t, "http://"+otlpListenAddr, env["OTEL_EXPORTER_OTLP_ENDPOINT"])
 		require.Equal(t, "1", env["CLAUDE_CODE_ENABLE_TELEMETRY"])
 	})

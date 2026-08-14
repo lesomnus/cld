@@ -25,7 +25,7 @@ func envMap(env []string) map[string]string {
 // daemon's own receiver, with metrics only.
 func TestSessionEnvTelemetryDefaultOn(t *testing.T) {
 	d, _ := newTestDaemon(t)
-	env := envMap(d.session_env(&entry{arch_ok: true}))
+	env := envMap(d.session_env(&entry{arch_ok: true}).Overrides())
 
 	require.Equal(t, "1", env["CLAUDE_CODE_ENABLE_TELEMETRY"])
 	require.Equal(t, "otlp", env["OTEL_METRICS_EXPORTER"])
@@ -51,11 +51,11 @@ func TestSessionEnvTelemetryDefaultOn(t *testing.T) {
 func TestSessionEnvTelemetryInterval(t *testing.T) {
 	d, cfg := newTestDaemon(t)
 
-	env := envMap(d.session_env(&entry{arch_ok: true}))
+	env := envMap(d.session_env(&entry{arch_ok: true}).Overrides())
 	require.Equal(t, "5000", env["OTEL_METRIC_EXPORT_INTERVAL"])
 
 	cfg.Telemetry.ExportInterval = config.Duration(20 * time.Second)
-	env = envMap(d.session_env(&entry{arch_ok: true}))
+	env = envMap(d.session_env(&entry{arch_ok: true}).Overrides())
 	require.Equal(t, "20000", env["OTEL_METRIC_EXPORT_INTERVAL"])
 }
 
@@ -65,7 +65,7 @@ func TestSessionEnvTelemetryDisabled(t *testing.T) {
 	d, cfg := newTestDaemon(t)
 	cfg.Telemetry.Disabled = true
 
-	for _, kv := range d.session_env(&entry{arch_ok: true}) {
+	for _, kv := range d.session_env(&entry{arch_ok: true}).Overrides() {
 		require.NotContains(t, kv, "OTEL_")
 		require.NotContains(t, kv, "CLAUDE_CODE_ENABLE_TELEMETRY")
 	}
@@ -78,7 +78,7 @@ func TestSessionEnvTelemetryNeedsRelay(t *testing.T) {
 	d, _ := newTestDaemon(t)
 	require.False(t, d.telemetry_session(&entry{arch_ok: false}))
 
-	for _, kv := range d.session_env(&entry{arch_ok: false}) {
+	for _, kv := range d.session_env(&entry{arch_ok: false}).Overrides() {
 		require.NotContains(t, kv, "OTEL_")
 	}
 }

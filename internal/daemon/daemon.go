@@ -177,6 +177,15 @@ type entry struct {
 	cfg_dir    string
 	dev_name   string // devcontainer.json "name", or "" if unset
 
+	// container_env is the container's own environment (its image ENV and the
+	// devcontainer's containerEnv), which every exec inherits. It is the base
+	// the session environment is resolved over — both what a ${VAR} reference
+	// sees and what a cld.yaml "null" removes. See session_env.
+	container_env []string
+	// remote_env is the devcontainer's own remoteEnv, which cld applies to the
+	// sessions it starts the way VS Code applies it to the terminals it opens.
+	remote_env map[string]string
+
 	platform release.Platform
 	arch     string // container arch reported by the image ("amd64"/"arm64"); for gh
 	arch_ok  bool   // container arch == host arch; self-copy and watcher possible

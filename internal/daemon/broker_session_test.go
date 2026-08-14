@@ -102,14 +102,14 @@ func TestSessionEnvBrokerVars(t *testing.T) {
 	t.Run("absent without a login", func(t *testing.T) {
 		d, _ := newTestDaemon(t)
 		enableProxy(t, d, e)
-		require.False(t, hasBaseURL(d.session_env(e)))
+		require.False(t, hasBaseURL(d.session_env(e).Overrides()))
 	})
 
 	// With a login but no project opt-in: still the default per-container login.
 	t.Run("absent without project opt-in", func(t *testing.T) {
 		d, _ := newTestDaemon(t)
 		require.NoError(t, d.broker.SetCredentials(&broker.Credentials{RefreshToken: "refresh"}))
-		require.False(t, hasBaseURL(d.session_env(e)))
+		require.False(t, hasBaseURL(d.session_env(e).Overrides()))
 	})
 
 	// With a login AND the project opted in: the proxy base URL, a placeholder
@@ -120,7 +120,7 @@ func TestSessionEnvBrokerVars(t *testing.T) {
 		d, _ := newTestDaemon(t)
 		require.NoError(t, d.broker.SetCredentials(&broker.Credentials{RefreshToken: "refresh"}))
 		enableProxy(t, d, e)
-		env := d.session_env(e)
+		env := d.session_env(e).Overrides()
 		require.Contains(t, env, "ANTHROPIC_BASE_URL=http://"+proxyListenAddr)
 		require.Contains(t, env, "ANTHROPIC_AUTH_TOKEN=cld-broker-placeholder")
 		require.Contains(t, env, "ENABLE_TOOL_SEARCH=true")

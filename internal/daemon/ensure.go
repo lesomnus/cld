@@ -17,6 +17,7 @@ import (
 	"github.com/lesomnus/cld/internal/claude"
 	"github.com/lesomnus/cld/internal/devc"
 	"github.com/lesomnus/cld/internal/dockerx"
+	"github.com/lesomnus/cld/internal/envx"
 	"github.com/lesomnus/cld/internal/ghcli"
 	"github.com/lesomnus/cld/internal/release"
 	"github.com/lesomnus/cld/internal/syncer"
@@ -340,6 +341,11 @@ func (d *Daemon) resolve(ctx context.Context, e *entry, id string, labels map[st
 	user := devc.RemoteUser(labels[devc.LabelMetadata])
 	if user == "" && c.Config != nil {
 		user = c.Config.User
+	}
+	if c.Config != nil {
+		// What every exec into this container inherits; the base the session
+		// environment is resolved over.
+		e.container_env = c.Config.Env
 	}
 
 	// One probe yields uid, gid, home, the cache dir, and libc, each on its own
@@ -758,14 +764,15 @@ func (d *Daemon) ensure_session(ctx context.Context, e *entry, id string) error 
 	}
 	has_history := code == 0
 
-	remote := session_command(has_history)
+	env := d.session_env(e)
+	remote := with_unset(env.Unset(), session_command(has_history))
 
 	argv := []string{
 		d.self, "x", "exec",
 		"--user", e.user,
 		"--workdir", e.item.Workspace,
 	}
-	for _, kv := range d.session_env(e) {
+	for _, kv := range env.Overrides() {
 		argv = append(argv, "--env", kv)
 	}
 	argv = append(argv,
@@ -840,7 +847,8 @@ func (d *Daemon) split_command(e *entry, id string) string {
 		"--user", e.user,
 		"--workdir", e.item.Workspace,
 	}
-	for _, kv := range d.session_env(e) {
+	env := d.session_env(e)
+	for _, kv := range env.Overrides() {
 		argv = append(argv, "--env", kv)
 	}
 	argv = append(argv, id, "--")
@@ -852,7 +860,8 @@ func (d *Daemon) split_command(e *entry, id string) string {
 	// fallback either, since a failed `exec` terminates a non-interactive shell
 	// before the `||` branch is reached. exec so the shell owns the pane and its
 	// exit closes the pane.
-	argv = append(argv, "sh", "-c", `s=${SHELL:-}; [ -x "$s" ] || s=$(command -v bash 2>/dev/null || command -v sh); exec "$s"`)
+	argv = append(argv, with_unset(env.Unset(),
+		[]string{"sh", "-c", `s=${SHELL:-}; [ -x "$s" ] || s=$(command -v bash 2>/dev/null || command -v sh); exec "$s"`})...)
 
 	command := tmuxx.QuoteAll(argv)
 	if h := os.Getenv("DOCKER_HOST"); h != "" {
@@ -861,66 +870,178 @@ func (d *Daemon) split_command(e *entry, id string) string {
 	return command
 }
 
-// session_env is the environment injected into every claude session. The
-// daemon owns this policy in one place; the pane client just forwards it.
-func (d *Daemon) session_env(e *entry) []string {
-	env := []string{
-		"CLAUDE_CONFIG_DIR=" + e.cfg_dir,
-		"DISABLE_AUTOUPDATER=1",
-		"TERM=xterm-256color",
-		// Devcontainer images often lack a locale; claude's TUI needs UTF-8.
-		"LANG=C.UTF-8",
+// Environment layer origins, as reported by `cld setting env`. They are worded
+// as the place a user would go to change the value.
+const (
+	envOriginRemote  = "devcontainer remoteEnv"
+	envOriginDefault = "cld default"
+	envOriginConfig  = "cld.yaml env"
+	envOriginManaged = "cld"
+)
+
+// session_env resolves the environment every claude session runs with, from
+// lowest precedence to highest: the container's own environment, the
+// devcontainer's remoteEnv, cld's overridable defaults, the user's cld.yaml
+// (globally, then per matching project), and finally the keys cld manages
+// itself, which the config layer is not allowed to name.
+//
+// The daemon owns this policy in one place; the pane client just forwards it.
+// Note this is a property of the processes cld starts — the claude pane, its
+// split panes, and user scripts — not of the container: cld does not create
+// the container, so it cannot change what everything else in it sees. See
+// docs/session-env.md.
+func (d *Daemon) session_env(e *entry) envx.Result {
+	layers := []envx.Layer{
+		{Origin: envOriginRemote, Vars: envPtrs(e.remote_env)},
+		{Origin: envOriginDefault, Vars: envPtrs(d.env_defaults())},
+	}
+	layers = append(layers, d.env_user_layers(e)...)
+	layers = append(layers, envx.Layer{Origin: envOriginManaged, Vars: envPtrs(d.env_managed(e))})
+	return envx.Resolve(e.container_env, d.env_lookup, layers...)
+}
+
+// env_defaults are cld's opinions rather than its promises, so the config
+// layer may override them: devcontainer images often lack a locale and
+// claude's TUI needs UTF-8, and claude must not update itself out from under
+// the version cld installed and reports.
+func (d *Daemon) env_defaults() map[string]string {
+	return map[string]string{
+		"DISABLE_AUTOUPDATER": "1",
+		"TERM":                "xterm-256color",
+		"LANG":                "C.UTF-8",
+	}
+}
+
+// env_user_layers are the layers declared in cld.yaml: the global env, then
+// every project block whose globs match this workspace, in file order. They
+// accumulate — a broad block and a narrow one compose rather than the first
+// match winning.
+func (d *Daemon) env_user_layers(e *entry) []envx.Layer {
+	out := []envx.Layer{}
+	if len(d.cfg.Env) > 0 {
+		out = append(out, envx.Layer{Origin: envOriginConfig, Vars: d.cfg.Env})
+	}
+	for _, p := range d.cfg.MatchProjects(e.item.LocalFolder) {
+		if len(p.Env) == 0 {
+			continue
+		}
+		// Name the block by what it matched: an index would send the user
+		// counting list items to find which one set a variable.
+		out = append(out, envx.Layer{
+			Origin: "cld.yaml projects[" + strings.Join(p.Match, ",") + "]",
+			Vars:   p.Env,
+		})
+	}
+	return out
+}
+
+// env_managed are the variables cld sets to keep its own promises: they point
+// claude at the config cld seeded, the agent relay, the broker proxy, and the
+// telemetry receiver. config.ReservedEnvKeys rejects them in user config, so
+// this layer never actually contends with one — it is last regardless, because
+// a session that quietly lost one of these would fail in ways no error message
+// explains.
+func (d *Daemon) env_managed(e *entry) map[string]string {
+	env := map[string]string{
+		"CLAUDE_CONFIG_DIR": e.cfg_dir,
 	}
 	// Point git at the host gitconfig copied into the config dir — but only
 	// when one was installed, so we don't shadow the image's own ~/.gitconfig
 	// with an empty file for users who have no host gitconfig.
 	if e.git_config {
-		env = append(env, "GIT_CONFIG_GLOBAL="+e.gitconfig_path())
+		env["GIT_CONFIG_GLOBAL"] = e.gitconfig_path()
 	}
 	// Point ssh clients (git signing/push) at the relay socket. Only when the
 	// relay actually runs (arch match); otherwise leave whatever the container
 	// already had.
 	if d.cfg.Auth.ForwardAgentEnabled() && e.arch_ok {
-		env = append(env, "SSH_AUTH_SOCK="+e.agent_sock())
+		env["SSH_AUTH_SOCK"] = e.agent_sock()
 	}
 	// Route claude's API traffic through the broker's proxy: it authenticates
 	// with a centrally-refreshed subscription token, so the session holds only a
 	// placeholder and never a refresh token. ENABLE_TOOL_SEARCH re-enables the
 	// tool-search optimization that a non-first-party base URL otherwise disables.
 	if d.broker_session(e) {
-		env = append(env,
-			"ANTHROPIC_BASE_URL=http://"+proxyListenAddr,
-			"ANTHROPIC_AUTH_TOKEN=cld-broker-placeholder",
-			"ENABLE_TOOL_SEARCH=true",
-		)
+		env["ANTHROPIC_BASE_URL"] = "http://" + proxyListenAddr
+		env["ANTHROPIC_AUTH_TOKEN"] = "cld-broker-placeholder"
+		env["ENABLE_TOOL_SEARCH"] = "true"
 	}
 	// Point claude's OpenTelemetry exporter at the receiver relay_otlp serves on
 	// the container's loopback, so `cld ls` can show what the session consumed.
 	// Only when the relay actually runs (arch match), else the exporter would
 	// retry against a dead port for the life of the session.
 	if d.telemetry_session(e) {
-		env = append(env,
-			"CLAUDE_CODE_ENABLE_TELEMETRY=1",
-			// Metrics only: cld reads the two consumption counters and has no
-			// use for logs or traces, which would otherwise carry prompt and
-			// tool metadata across the relay for nothing.
-			"OTEL_METRICS_EXPORTER=otlp",
-			"OTEL_LOGS_EXPORTER=none",
-			"OTEL_TRACES_EXPORTER=none",
-			// JSON, not protobuf: it is what internal/otlpx decodes, which is
-			// why the daemon needs no protobuf runtime to be the collector.
-			"OTEL_EXPORTER_OTLP_PROTOCOL=http/json",
-			"OTEL_EXPORTER_OTLP_ENDPOINT=http://"+otlpListenAddr,
-			fmt.Sprintf("OTEL_METRIC_EXPORT_INTERVAL=%d", d.cfg.Telemetry.ExportIntervalOrDefault().Milliseconds()),
-			// The daemon attributes every export by the relay it arrived on, so
-			// the identifying resource attributes are redundant. Dropping them
-			// keeps the account uuid, account id and session id out of the
-			// exports entirely rather than receiving and discarding them.
-			"OTEL_METRICS_INCLUDE_SESSION_ID=false",
-			"OTEL_METRICS_INCLUDE_ACCOUNT_UUID=false",
-		)
+		env["CLAUDE_CODE_ENABLE_TELEMETRY"] = "1"
+		// Metrics only: cld reads the two consumption counters and has no
+		// use for logs or traces, which would otherwise carry prompt and
+		// tool metadata across the relay for nothing.
+		env["OTEL_METRICS_EXPORTER"] = "otlp"
+		env["OTEL_LOGS_EXPORTER"] = "none"
+		env["OTEL_TRACES_EXPORTER"] = "none"
+		// JSON, not protobuf: it is what internal/otlpx decodes, which is
+		// why the daemon needs no protobuf runtime to be the collector.
+		env["OTEL_EXPORTER_OTLP_PROTOCOL"] = "http/json"
+		env["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://" + otlpListenAddr
+		env["OTEL_METRIC_EXPORT_INTERVAL"] = strconv.FormatInt(
+			d.cfg.Telemetry.ExportIntervalOrDefault().Milliseconds(), 10)
+		// The daemon attributes every export by the relay it arrived on, so
+		// the identifying resource attributes are redundant. Dropping them
+		// keeps the account uuid, account id and session id out of the
+		// exports entirely rather than receiving and discarding them.
+		env["OTEL_METRICS_INCLUDE_SESSION_ID"] = "false"
+		env["OTEL_METRICS_INCLUDE_ACCOUNT_UUID"] = "false"
 	}
 	return env
+}
+
+// env_lookup answers the ${ns:NAME} references envx cannot resolve on its own.
+//
+// ${env:NAME} reads the DAEMON's own environment, which is how a secret
+// reaches a session without being written into cld.yaml: put it in the
+// daemon's compose file or `cld install` and reference it from there.
+//
+// ${localEnv:NAME}, which a devcontainer.json value may use, resolves to
+// nothing: a containerized daemon cannot see the host user's environment, and
+// silently substituting its own would be worse than an empty value.
+func (d *Daemon) env_lookup(ns, name string) (string, bool) {
+	switch ns {
+	case "env":
+		return os.LookupEnv(name)
+	case "localEnv":
+		d.log.Warn("env: ${localEnv:} cannot be resolved by the daemon",
+			slog.String("name", name))
+		return "", false
+	default:
+		return "", false
+	}
+}
+
+// envPtrs adapts a plain map to an envx layer, where a nil value would mean
+// "remove this variable" — something only user config can ask for.
+func envPtrs(m map[string]string) map[string]*string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]*string, len(m))
+	for k, v := range m {
+		out[k] = &v
+	}
+	return out
+}
+
+// with_unset wraps a command so variables the config removed are gone from its
+// environment. A docker exec can add and replace variables but never drop an
+// inherited one, so the removal has to happen in the command itself. The keys
+// need no quoting: config only accepts valid environment variable names.
+func with_unset(keys []string, argv []string) []string {
+	if len(keys) == 0 {
+		return argv
+	}
+	// `exec "$@"` keeps the wrapped command in the same process, so its exit
+	// status is still the pane's and nothing else has to know about the wrapper.
+	return append([]string{
+		"sh", "-c", "unset " + strings.Join(keys, " ") + `; exec "$@"`, "sh",
+	}, argv...)
 }
 
 // telemetry_session reports whether this session should export its consumption

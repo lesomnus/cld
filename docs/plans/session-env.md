@@ -198,7 +198,10 @@ exec env로 분리되어 실제 충돌은 없지만(사용자 env가 pane 클라
 - [x] 2. 설정 스키마 — `cmd/config`에 `env`/`files`/`scripts`/`projects`와 검증
       (`cmd/config/session.go`). `src`는 `~/` 시작을 강제한다 — 호스트 데몬과
       컨테이너 데몬이 절대 경로를 다르게 해석하는 모호함을 없앤다.
-- [ ] 3. `session_env` 재구성 — 컨테이너 env 캡처, 사용자 레이어 배선, unset 래퍼
+- [x] 3. `session_env` 재구성 — 컨테이너 env 캡처, 사용자 레이어 배선, unset 래퍼.
+      `env_managed`의 모든 키가 예약되어 있는지 `TestSessionEnvManagedKeysAreReserved`가
+      감시한다(관리 레이어는 조용히 이기므로, 예약되지 않은 키가 있으면 사용자는
+      설정이 무시되는 이유를 알 방법이 없다). 그래서 `ENABLE_TOOL_SEARCH`도 예약에 추가.
 - [ ] 4. `devc.RemoteEnv` — metadata 라벨 + config 파일에서 remoteEnv 채택
 - [ ] 5. `files` 배치 — 해시 비교 갱신
 - [ ] 6. `scripts` — setup/start, 마커, 타임아웃, on_error
