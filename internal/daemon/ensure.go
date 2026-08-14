@@ -173,6 +173,12 @@ func (d *Daemon) ensure_(ctx context.Context, e *entry) error {
 		d.install_vscode_profile(ctx, e, id)
 	}
 
+	// Best-effort: place the host files cld.yaml declares for this workspace —
+	// what session env cannot carry, such as a remote engine's TLS material.
+	// After dotfiles, so an explicit placement wins over a dotfile of the same
+	// name, and before the session, so claude sees it from its first prompt.
+	d.install_files(ctx, e, id)
+
 	if !e.session_done {
 		// Suppress recreation of a session the user ended in this generation,
 		// even across a daemon restart (the record is on disk).

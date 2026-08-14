@@ -110,6 +110,38 @@ func WriteFile(ctx context.Context, cli *client.Client, ctr string, dir string, 
 // would leave the created parents owned by root. Only regular files and
 // directories are copied.
 func CopyDirToContainer(ctx context.Context, cli *client.Client, ctr, destDir, name, src string, uid, gid int) error {
+	return copyTree(ctx, cli, ctr, destDir, name, src, uid, gid, 0)
+}
+
+// CopyTreeToContainer is CopyDirToContainer with one explicit permission for
+// every file it writes, for trees whose permissions matter more than the
+// source's own bits — credentials, where a mode copied from a host file could
+// leave a key readable to the whole container.
+//
+// Directories get the same permission plus execute wherever it grants read,
+// since a directory is unusable without it.
+func CopyTreeToContainer(ctx context.Context, cli *client.Client, ctr, destDir, name, src string, uid, gid int, mode int64) error {
+	if mode <= 0 {
+		return fmt.Errorf("mode is required")
+	}
+	return copyTree(ctx, cli, ctr, destDir, name, src, uid, gid, mode)
+}
+
+// dirModeFor turns a file permission into the directory permission that makes
+// it reachable: execute wherever read is granted.
+func dirModeFor(mode int64) int64 {
+	for _, r := range []int64{0o400, 0o040, 0o004} {
+		if mode&r != 0 {
+			mode |= r >> 2
+		}
+	}
+	return mode
+}
+
+// copyTree streams src into the container as destDir/name. mode 0 preserves
+// the source's executable bit (0755 / 0644); a non-zero mode is applied to
+// every entry instead.
+func copyTree(ctx context.Context, cli *client.Client, ctr, destDir, name, src string, uid, gid int, mode int64) error {
 	pr, pw := io.Pipe()
 	go func() {
 		tw := tar.NewWriter(pw)
@@ -126,8 +158,12 @@ func CopyDirToContainer(ctx context.Context, cli *client.Client, ctr, destDir, n
 				arc = name + "/" + filepath.ToSlash(rel)
 			}
 			if d.IsDir() {
+				dir_mode := int64(0o755)
+				if mode > 0 {
+					dir_mode = dirModeFor(mode)
+				}
 				return tw.WriteHeader(&tar.Header{
-					Typeflag: tar.TypeDir, Name: arc + "/", Mode: 0o755, Uid: uid, Gid: gid,
+					Typeflag: tar.TypeDir, Name: arc + "/", Mode: dir_mode, Uid: uid, Gid: gid,
 				})
 			}
 			if !d.Type().IsRegular() {
@@ -140,12 +176,15 @@ func CopyDirToContainer(ctx context.Context, cli *client.Client, ctr, destDir, n
 			// Preserve the source's executable bit (as 0755) so dotfiles helper
 			// scripts and ~/.local/bin executables stay runnable; everything else
 			// is 0644.
-			mode := int64(0o644)
-			if info, err := d.Info(); err == nil && info.Mode()&0o111 != 0 {
-				mode = 0o755
+			file_mode := mode
+			if file_mode == 0 {
+				file_mode = 0o644
+				if info, err := d.Info(); err == nil && info.Mode()&0o111 != 0 {
+					file_mode = 0o755
+				}
 			}
 			if err := tw.WriteHeader(&tar.Header{
-				Typeflag: tar.TypeReg, Name: arc, Mode: mode, Uid: uid, Gid: gid, Size: int64(len(data)),
+				Typeflag: tar.TypeReg, Name: arc, Mode: file_mode, Uid: uid, Gid: gid, Size: int64(len(data)),
 			}); err != nil {
 				return err
 			}
@@ -165,8 +204,16 @@ func CopyDirToContainer(ctx context.Context, cli *client.Client, ctr, destDir, n
 	return err
 }
 
-// CopyFileFromHost streams a host file into the container as dir/name.
+// CopyFileFromHost streams a host file into the container as dir/name, owned
+// by root — right for the binaries cld installs system-wide.
 func CopyFileFromHost(ctx context.Context, cli *client.Client, ctr string, dir string, name string, mode int64, src io.Reader, size int64) error {
+	return CopyFileFromHostAs(ctx, cli, ctr, dir, name, mode, 0, 0, src, size)
+}
+
+// CopyFileFromHostAs is CopyFileFromHost with an explicit owner, for a file
+// the container user has to be able to read — a credential placed in its home,
+// say, which root-owned would be useless to it.
+func CopyFileFromHostAs(ctx context.Context, cli *client.Client, ctr string, dir string, name string, mode int64, uid, gid int, src io.Reader, size int64) error {
 	pr, pw := io.Pipe()
 	go func() {
 		tw := tar.NewWriter(pw)
@@ -174,6 +221,8 @@ func CopyFileFromHost(ctx context.Context, cli *client.Client, ctr string, dir s
 			Typeflag: tar.TypeReg,
 			Name:     name,
 			Mode:     mode,
+			Uid:      uid,
+			Gid:      gid,
 			Size:     size,
 			ModTime:  time.Now(),
 		})

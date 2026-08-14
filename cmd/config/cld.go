@@ -230,6 +230,28 @@ func (c *Config) evaluateCld() error {
 	return nil
 }
 
+// HostPath resolves a "~/..." path written in the config to where the daemon
+// can actually read it: under the read-only host-home mount when the daemon is
+// containerized (the normal deployment), or the daemon user's own home when it
+// runs on the host. Returns "" for anything not written as "~/...", which is
+// the only form the config accepts — an absolute path would mean different
+// things to those two daemons.
+func (c *Config) HostPath(p string) string {
+	rest, ok := strings.CutPrefix(p, "~/")
+	if !ok {
+		return ""
+	}
+	home := c.HostHome
+	if home == "" {
+		h, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		home = h
+	}
+	return filepath.Join(home, rest)
+}
+
 // DotfilesDir is the host's ~/.dotfiles as the daemon sees it, under the
 // read-only host-home mount (HostHomeMount). It is "" when the daemon has no
 // such mount (HostHome unset), in which case there are no host dotfiles to
