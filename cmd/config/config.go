@@ -44,6 +44,16 @@ type Config struct {
 	// knob — it is wired in by `cld install` / docker-compose.
 	HostHome string `yaml:"-"`
 
+	// Env, Files, Scripts and Projects declare what a claude session runs
+	// with: its environment, files placed in the container for it, and
+	// scripts run before it starts. Env/Files/Scripts apply to every managed
+	// container; Projects scopes the same three to matching workspaces. See
+	// session.go and docs/session-env.md.
+	Env      EnvMap          `yaml:"env"`
+	Files    []FileSpec      `yaml:"files"`
+	Scripts  ScriptSet       `yaml:"scripts"`
+	Projects []ProjectConfig `yaml:"projects"`
+
 	Auth      AuthConfig      `yaml:"auth"`
 	Release   ReleaseConfig   `yaml:"release"`
 	Gh        GhConfig        `yaml:"gh"`
@@ -76,5 +86,8 @@ func (c *Config) Path() string {
 }
 
 func (c *Config) Evaluate() error {
-	return c.evaluateCld()
+	if err := c.evaluateCld(); err != nil {
+		return err
+	}
+	return c.evaluateSession()
 }
