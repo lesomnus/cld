@@ -199,6 +199,61 @@ func RemoteUser(metadata string) string {
 	return u
 }
 
+// RemoteEnv extracts the environment a devcontainer declares for the processes
+// started inside it. Unlike containerEnv, which is baked into the container and
+// inherited by every exec, remoteEnv is applied by whoever attaches — VS Code
+// applies it to the terminals it opens, and cld applies it to the sessions it
+// starts. A devcontainer that declares one would otherwise be missing it in
+// claude's environment while having it in a VS Code terminal.
+//
+// Both sources are read: the metadata label, whose snippets (features and the
+// config the image was built from) merge in order, and the config file itself,
+// which is the most specific and so applied last. A non-string value is
+// skipped rather than coerced.
+func RemoteEnv(metadata string, config_file []byte) map[string]string {
+	out := map[string]string{}
+
+	merge := func(raw json.RawMessage) {
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return
+		}
+		for k, rv := range m {
+			// A pointer, so an explicit null is skipped rather than read as
+			// the empty string: unmarshalling null into a string succeeds.
+			var v *string
+			if err := json.Unmarshal(rv, &v); err == nil && v != nil {
+				out[k] = *v
+			}
+		}
+	}
+
+	if metadata != "" {
+		var entries []map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(metadata), &entries); err == nil {
+			for _, e := range entries {
+				if raw, ok := e["remoteEnv"]; ok {
+					merge(raw)
+				}
+			}
+		}
+	}
+
+	if len(config_file) > 0 {
+		var c struct {
+			RemoteEnv json.RawMessage `json:"remoteEnv"`
+		}
+		if err := json.Unmarshal(StripJSONC(config_file), &c); err == nil && len(c.RemoteEnv) > 0 {
+			merge(c.RemoteEnv)
+		}
+	}
+
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // Mount is the subset of a container mount point needed to resolve the workspace.
 type Mount struct {
 	Source      string

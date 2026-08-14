@@ -136,6 +136,31 @@ func TestRemoteUser(t *testing.T) {
 	})
 }
 
+func TestRemoteEnv(t *testing.T) {
+	t.Run("merges label snippets in order", func(t *testing.T) {
+		v := devc.RemoteEnv(`[{"remoteEnv":{"A":"1","B":"1"}},{"foo":1},{"remoteEnv":{"B":"2"}}]`, nil)
+		require.Equal(t, map[string]string{"A": "1", "B": "2"}, v)
+	})
+	t.Run("the config file is most specific", func(t *testing.T) {
+		config := []byte(`{
+			// the project's own value wins over what the image carried
+			"remoteEnv": {"A": "config"}
+		}`)
+		v := devc.RemoteEnv(`[{"remoteEnv":{"A":"label","B":"label"}}]`, config)
+		require.Equal(t, map[string]string{"A": "config", "B": "label"}, v)
+	})
+	t.Run("skips non-string values", func(t *testing.T) {
+		// The spec says strings; anything else is left to the CLI to reject.
+		v := devc.RemoteEnv(`[{"remoteEnv":{"A":"1","N":null,"O":{"x":1}}}]`, nil)
+		require.Equal(t, map[string]string{"A": "1"}, v)
+	})
+	t.Run("absent, empty, or invalid", func(t *testing.T) {
+		require.Nil(t, devc.RemoteEnv("", nil))
+		require.Nil(t, devc.RemoteEnv("not json", []byte("not json")))
+		require.Nil(t, devc.RemoteEnv(`[{"foo":1}]`, []byte(`{"name":"x"}`)))
+	})
+}
+
 func TestContainerPath(t *testing.T) {
 	mounts := []devc.Mount{
 		{Source: "/home/me/workspaces", Destination: "/workspaces"},

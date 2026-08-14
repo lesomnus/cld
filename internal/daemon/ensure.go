@@ -392,6 +392,7 @@ func (d *Daemon) resolve(ctx context.Context, e *entry, id string, labels map[st
 
 	config_file := d.read_config_file(ctx, id, labels[devc.LabelConfigFile], mounts)
 	e.dev_name = devc.ProjectName(config_file)
+	e.remote_env = devc.RemoteEnv(labels[devc.LabelMetadata], config_file)
 	e.item.Workspace = devc.WorkspaceFolder(config_file, e.item.LocalFolder, mounts)
 	if e.item.Workspace == "" {
 		return fmt.Errorf("cannot determine workspace folder for %s", e.item.LocalFolder)
