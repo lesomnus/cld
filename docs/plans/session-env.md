@@ -221,10 +221,12 @@ exec env로 분리되어 실제 충돌은 없지만(사용자 env가 pane 클라
 - [x] 7. `cld setting env` — 데몬 엔드포인트(`GET /session/env`) + 클라이언트 출력.
       세션 env에는 자격증명이 들어갈 수 있으므로 컨테이너 릴레이에서는
       `only_self`로 막는다(자기 것만 조회 가능 — 어차피 자기 프로세스가 들고 있는 값).
-- [ ] 8. 사용자 문서 — `docs/session-env.md`, README, cld.yaml 주석
+- [x] 8. 사용자 문서 — `docs/session-env.md`, README, cld.yaml 주석
 
 1~4는 도커 없이 검증된다(`internal/daemon`의 기존 env 테스트가 `session_env`를 직접
-호출한다). 5~7은 그 위에 얹힌다.
+호출한다). 5~7은 그 위에 얹히고, 컨테이너를 실제로 건드리는 경로(복사·모드·소유자,
+마커 재실행 판정, 스크립트 실행과 `unset` 래퍼)는 `session_provision_test.go`가
+실제 엔진에 대고 검증한다.
 
 ### unset 구현 메모
 

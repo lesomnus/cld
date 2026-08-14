@@ -12,6 +12,61 @@
 #ignore:
 #  - ~/work/vendor/**
 
+# What a claude session runs with. These apply to the processes cld starts —
+# the claude session, the panes you split off it, and the scripts below — not to
+# the container as a whole (cld does not create it; put container-wide values in
+# devcontainer.json). Full reference: docs/session-env.md.
+#
+# Environment variables for every managed container. Values may extend what is
+# already there (${PATH}:/x), defer to it (${FOO:-default}), read the DAEMON's
+# own environment for secrets you don't want in this file (${env:NAME}), or
+# remove a variable the image set (null). Your value wins over devcontainer.json;
+# the variables cld manages itself (CLAUDE_CONFIG_DIR, SSH_AUTH_SOCK,
+# ANTHROPIC_*, OTEL_*, ...) are rejected here rather than silently ignored.
+#env:
+#  EDITOR: vim
+#  PATH: ${PATH}:/opt/mytools/bin
+
+# Host files to place in every container, for what an environment variable
+# cannot carry — TLS material, a credential file. "src" must be under your home
+# and written as "~/..." (the daemon reads your host through a read-only mount
+# of it); "dst" may use ${HOME} and ${CLD_WORKSPACE}. Copied owned by the
+# container user at mode 0600 unless you say otherwise, and re-copied when the
+# source changes.
+#files:
+#  - src: ~/.config/mytool/
+#    dst: ${HOME}/.config/mytool
+
+# Scripts run before the session starts, after everything cld installs — so a
+# tool one installs is there from claude's first prompt. "setup" runs once per
+# container (again when you edit it), "start" on every container start. A
+# failure is logged and provisioning continues unless you set on_error: fail.
+#scripts:
+#  setup: sudo apt-get update && sudo apt-get install -y ripgrep
+#  start: echo "started ${CLD_NAME}"
+
+# The same three, scoped to the workspaces a glob matches. "match" is matched
+# against the host-side workspace path, exactly like "ignore" above. EVERY
+# matching block applies, in file order, so a broad one and a narrow one
+# compose. This is the place for a remote Docker engine and its credentials:
+# only the projects that need it get them.
+#projects:
+#  - match: ~/work/acme/**
+#    env:
+#      AWS_PROFILE: acme
+#      DOCKER_HOST: tcp://build01.internal:2376
+#      DOCKER_TLS_VERIFY: "1"
+#      DOCKER_CERT_PATH: ${HOME}/.docker-remote
+#    files:
+#      - src: ~/.docker/build01/
+#        dst: ${HOME}/.docker-remote
+#    scripts:
+#      setup:
+#        run: [make, dev-setup]
+#        user: root
+#        timeout: 10m
+#        on_error: fail
+
 auth:
   # By default each container logs in for itself: run `claude` inside it and
   # complete the login once. cld persists that login (.credentials.json) to the

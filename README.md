@@ -414,6 +414,39 @@ propagated into every session by default; see `auth.share_config` in
 container (see "Your dotfiles come with you" above); see `dotfiles` in
 `cld.yaml` to disable it.
 
+### What a session runs with
+
+`cld.yaml` also declares the environment a claude session gets, host files to
+place in the container for it, and scripts to run before it starts — globally or
+scoped to the projects a glob matches:
+
+```yaml
+env:
+  EDITOR: vim
+
+projects:
+  - match: ~/work/acme/**
+    env:
+      DOCKER_HOST: tcp://build01.internal:2376   # a remote engine for claude
+      DOCKER_CERT_PATH: ${HOME}/.docker-remote
+    files:
+      - src: ~/.docker/build01/                  # its TLS material
+        dst: ${HOME}/.docker-remote
+    scripts:
+      setup: sudo apt-get install -y ripgrep     # once per container
+```
+
+Values can extend what the image set (`${PATH}:/x`), defer to it
+(`${FOO:-default}`), pull a secret from the daemon's own environment rather than
+this file (`${env:NAME}`), or remove a variable (`null`). Your `cld.yaml` wins
+over `devcontainer.json` — whose `remoteEnv` cld now applies too — and
+`cld setting env <name>` shows the result with the layer each value came from.
+
+This applies to the processes cld starts (the session, its split panes, those
+scripts), not to the container as a whole: container-wide environment, ports and
+mounts remain `devcontainer.json`'s job. Full reference:
+[docs/session-env.md](docs/session-env.md).
+
 See `plan.md` for the design and roadmap.
 
 ## Development
