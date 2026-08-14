@@ -194,7 +194,7 @@ exec env로 분리되어 실제 충돌은 없지만(사용자 env가 pane 클라
 
 ## 단계
 
-- [ ] 1. `internal/envx` — 레이어 병합, `${}` 확장, provenance. 순수 함수, 단위 테스트
+- [x] 1. `internal/envx` — 레이어 병합, `${}` 확장, provenance. 순수 함수, 단위 테스트
 - [ ] 2. 설정 스키마 — `cmd/config`에 `env`/`files`/`scripts`/`projects`와 검증
 - [ ] 3. `session_env` 재구성 — 컨테이너 env 캡처, 사용자 레이어 배선, unset 래퍼
 - [ ] 4. `devc.RemoteEnv` — metadata 라벨 + config 파일에서 remoteEnv 채택
