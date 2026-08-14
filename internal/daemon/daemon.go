@@ -209,6 +209,7 @@ type entry struct {
 	session_failed bool   // this generation's session exited non-zero; keep it visible
 	git_config     bool   // host gitconfig was installed into the config dir
 	dotfiles       bool   // host ~/.dotfiles was installed into this container
+	scripts_gen    string // start generation the user's start scripts last ran for
 	started_at     string // container State.StartedAt of the current generation
 	version        string
 

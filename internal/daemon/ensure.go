@@ -179,6 +179,16 @@ func (d *Daemon) ensure_(ctx context.Context, e *entry) error {
 	// name, and before the session, so claude sees it from its first prompt.
 	d.install_files(ctx, e, id)
 
+	// The user's own scripts, last of the provisioning steps: everything cld
+	// installs is in place, so a script can build on it, and the session does
+	// not exist yet, so what a script installs is there from claude's first
+	// prompt. Only a script marked `on_error: fail` stops provisioning.
+	for _, ev := range []scriptEvent{scriptSetup, scriptStart} {
+		if err := d.run_scripts(ctx, e, id, ev); err != nil {
+			return fmt.Errorf("%s script: %w", ev, err)
+		}
+	}
+
 	if !e.session_done {
 		// Suppress recreation of a session the user ended in this generation,
 		// even across a daemon restart (the record is on disk).

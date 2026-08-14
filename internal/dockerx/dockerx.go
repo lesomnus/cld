@@ -19,15 +19,32 @@ import (
 	"github.com/moby/moby/client"
 )
 
+// ExecOptions is one non-interactive exec. Only Cmd is required; an empty
+// User runs as the container's default user.
+type ExecOptions struct {
+	User       string
+	WorkingDir string
+	Env        []string
+	Cmd        []string
+}
+
 // ExecOutput runs a command in a container and returns its combined stdout,
 // its exit code, and any transport error. user may be empty for the
 // container's default user.
 func ExecOutput(ctx context.Context, cli *client.Client, ctr string, user string, cmd []string) (string, int, error) {
+	return Exec(ctx, cli, ctr, ExecOptions{User: user, Cmd: cmd})
+}
+
+// Exec is ExecOutput with a working directory and an environment, for running
+// something on the user's behalf rather than probing the container.
+func Exec(ctx context.Context, cli *client.Client, ctr string, o ExecOptions) (string, int, error) {
 	created, err := cli.ExecCreate(ctx, ctr, client.ExecCreateOptions{
-		User:         user,
+		User:         o.User,
+		WorkingDir:   o.WorkingDir,
+		Env:          o.Env,
 		AttachStdout: true,
 		AttachStderr: true,
-		Cmd:          cmd,
+		Cmd:          o.Cmd,
 	})
 	if err != nil {
 		return "", 0, err

@@ -211,7 +211,13 @@ exec env로 분리되어 실제 충돌은 없지만(사용자 env가 pane 클라
       `dockerx`에 소유자·모드를 지정하는 복사 함수를 추가했다 — 기존 복사기는
       root 소유(`CopyFileFromHost`)이거나 소스의 실행 비트를 따르므로(`CopyDirToContainer`)
       자격증명을 컨테이너 사용자에게 0600으로 놓을 수단이 없었다.
-- [ ] 6. `scripts` — setup/start, 마커, 타임아웃, on_error
+- [x] 6. `scripts` — setup/start, 마커, 타임아웃, on_error (`internal/daemon/scripts.go`).
+      `setup` 마커는 **치명적 실패(`on_error: fail`) 시에는 기록하지 않는다** — 그래야
+      "반드시 성공해야 한다"고 선언한 스크립트가 다음 프로비저닝에서 다시 시도된다.
+      `warn` 실패는 기록한다(반쯤 적용된 부작용을 매번 재적용하지 않기 위해).
+      타임아웃은 데몬이 기다리기를 멈추는 것이지 컨테이너 안 프로세스를 죽이지는
+      않는다 — detached exec에 신호를 보낼 방법이 없다. 목적은 워커 고루틴이 막히지
+      않게 하는 것.
 - [ ] 7. `cld setting env` — 데몬 엔드포인트 + 클라이언트 출력
 - [ ] 8. 사용자 문서 — `docs/session-env.md`, README, cld.yaml 주석
 
