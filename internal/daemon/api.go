@@ -54,6 +54,7 @@ func (d *Daemon) api() http.Handler {
 	mux.HandleFunc("POST /claude/update", d.handle_update)
 	mux.HandleFunc("POST /claude/update/all", d.handle_update_all)
 	mux.HandleFunc("GET /claude/config", d.handle_get_config)
+	mux.HandleFunc("GET /session/env", d.handle_get_env)
 	mux.HandleFunc("POST /auth/credentials", d.handle_set_credentials)
 	mux.HandleFunc("GET /usage", d.handle_usage(""))
 	return mux
@@ -124,8 +125,10 @@ func (d *Daemon) scoped_api(self_id string) http.Handler {
 	// A container may update its own Claude Code binary and restart its own
 	// session; the whole-fleet /claude/update/all is deliberately host-only.
 	mux.HandleFunc("POST /claude/update", only_self(d.handle_update))
-	// A container may read its own effective config.
+	// A container may read its own effective config, and the environment its
+	// own sessions run with — which its processes already hold anyway.
 	mux.HandleFunc("GET /claude/config", only_self(d.handle_get_config))
+	mux.HandleFunc("GET /session/env", only_self(d.handle_get_env))
 	// A container reports its OWN conversation activity here (claude's hooks call
 	// `cld x activity <state>`). The identity is the bound self_id, not a caller
 	// argument, so it is inherently self-scoped — a container can only ever set
@@ -646,6 +649,65 @@ func (d *Daemon) handle_get_config(w http.ResponseWriter, r *http.Request) {
 	w.Write(res.data)
 }
 
+// EnvVar is one variable of a session's effective environment, with the layer
+// that decided it (see daemon.session_env). Backs `cld setting env`.
+type EnvVar struct {
+	Key    string `json:"key"`
+	Value  string `json:"value"`
+	Origin string `json:"origin"`
+	// Unset means the config removed a variable the container had, so the
+	// session runs without it.
+	Unset bool `json:"unset,omitempty"`
+}
+
+// handle_get_env returns the environment a session of this devcontainer runs
+// with, resolved exactly as ensure_session resolves it, each variable carrying
+// the layer that decided it. Without this a user has no way to tell why a
+// variable they set in cld.yaml did not take. Like handle_get_config it runs on
+// the container's worker, so it never races provisioning.
+func (d *Daemon) handle_get_env(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		http.Error(w, "name required", http.StatusBadRequest)
+		return
+	}
+
+	e := d.by_name(name)
+	if e == nil {
+		http.Error(w, "no such devcontainer", http.StatusNotFound)
+		return
+	}
+
+	type result struct {
+		vars        []EnvVar
+		provisioned bool
+	}
+	done := make(chan result, 1)
+	if !e.mbox.post(func() {
+		if e.cfg_dir == "" {
+			done <- result{}
+			return
+		}
+		res := d.session_env(e)
+		vars := make([]EnvVar, 0, len(res.Vars))
+		for _, v := range res.Vars {
+			vars = append(vars, EnvVar{Key: v.Key, Value: v.Value, Origin: v.Origin, Unset: v.Unset})
+		}
+		done <- result{vars: vars, provisioned: true}
+	}) {
+		http.Error(w, "container is no longer tracked", http.StatusConflict)
+		return
+	}
+
+	res := <-done
+	if !res.provisioned {
+		http.Error(w, "devcontainer is not provisioned yet", http.StatusConflict)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"vars": res.vars})
+}
+
 // maxCredentialsLen bounds the accepted credentials body. A ~/.claude
 // credentials file is a few hundred bytes; this is generous.
 const maxCredentialsLen = 16384
@@ -1006,6 +1068,36 @@ func GetClaudeConfig(ctx context.Context, socket string, name string, file strin
 		return nil, fmt.Errorf("%s", strings.TrimSpace(string(body)))
 	}
 	return io.ReadAll(res.Body)
+}
+
+// GetSessionEnv returns the environment a session of the named devcontainer
+// runs with, each variable carrying the layer that decided it. Backs
+// `cld setting env`.
+func GetSessionEnv(ctx context.Context, socket string, name string) ([]EnvVar, error) {
+	hc := NewSocketClient(socket)
+	url := "http://cld/session/env?name=" + urlpkg.QueryEscape(name)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	res, err := hc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("is `cld serve` running? %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 512))
+		return nil, fmt.Errorf("%s", strings.TrimSpace(string(body)))
+	}
+
+	var out struct {
+		Vars []EnvVar `json:"vars"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out.Vars, nil
 }
 
 // UpdateClaudeAll asks the daemon to re-inject the current Claude Code binary

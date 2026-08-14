@@ -218,7 +218,9 @@ exec env로 분리되어 실제 충돌은 없지만(사용자 env가 pane 클라
       타임아웃은 데몬이 기다리기를 멈추는 것이지 컨테이너 안 프로세스를 죽이지는
       않는다 — detached exec에 신호를 보낼 방법이 없다. 목적은 워커 고루틴이 막히지
       않게 하는 것.
-- [ ] 7. `cld setting env` — 데몬 엔드포인트 + 클라이언트 출력
+- [x] 7. `cld setting env` — 데몬 엔드포인트(`GET /session/env`) + 클라이언트 출력.
+      세션 env에는 자격증명이 들어갈 수 있으므로 컨테이너 릴레이에서는
+      `only_self`로 막는다(자기 것만 조회 가능 — 어차피 자기 프로세스가 들고 있는 값).
 - [ ] 8. 사용자 문서 — `docs/session-env.md`, README, cld.yaml 주석
 
 1~4는 도커 없이 검증된다(`internal/daemon`의 기존 env 테스트가 `session_env`를 직접

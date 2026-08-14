@@ -36,6 +36,9 @@ func TestScopedAPI(t *testing.T) {
 			{http.MethodGet, "/session/attach?name=bravo"},
 			{http.MethodPost, "/session/new?name=bravo"},
 			{http.MethodPost, "/down?name=bravo"},
+			// A session environment can hold credentials, so it is as
+			// self-scoped as everything else here.
+			{http.MethodGet, "/session/env?name=bravo"},
 		}
 		for _, c := range cases {
 			rr := httptest.NewRecorder()

@@ -149,6 +149,7 @@ keeps running; reopen (or `cld it myapp` from the host) to pick it back up.
 | Update claude to the latest version | `cld update <name>` (`--all` for every one)        |
 | Edit the config shared into containers | `cld setting edit` (`… edit claude-md`)         |
 | See a container's effective config  | `cld setting cat <name>` (pipes: `… cat app \| jq`) |
+| See the env its claude session runs with | `cld setting env <name>`                      |
 | Remove a devcontainer               | `cld down <name>` (keeps the conversation backup)  |
 | Remove every devcontainer cld manages | `cld down --all` (skips `cld.ignore` / non-cld)  |
 | Delete a devcontainer for good      | `cld purge <name>` (also deletes volumes + backup) |
@@ -312,6 +313,12 @@ day in `cld up`/`cld it`/`cld ls`/`cld down`.
   `file` it prints `settings.json`; `cld setting cat <name> claude-md` prints
   `CLAUDE.md`. With no `name` it targets the only devcontainer (its own, run inside
   a container). Output is verbatim, so it pipes: `cld setting cat app | jq .model`.
+- **`cld setting env [name]`** — print the environment a devcontainer's claude
+  session runs with, one variable per line with the layer that decided it (the
+  container's own environment, the devcontainer's `remoteEnv`, cld's defaults,
+  your `cld.yaml`, or cld itself). That last column is the point: when a variable
+  you set in `cld.yaml` does not take, it names what won. `--export` prints shell
+  assignments instead. See [docs/session-env.md](docs/session-env.md).
 - **`cld config`** — print cld's own daemon configuration as YAML (defaults merged
   with your `cld.yaml`) — distinct from `cld setting`, which is claude's config.
   Use it to check what settings are in effect.
