@@ -114,7 +114,7 @@ inside that session's container:
 | `prefix + c`   | container shell in a new window             |
 
 The shell is the same `cld x exec` attach the claude pane uses, pointed at a
-login shell (`${SHELL:-bash}`, falling back to `sh`) instead of `claude`, and
+login shell (`$SHELL`, falling back to `bash` then `sh`) instead of `claude`, and
 carrying the same session environment (`session_env`). It omits
 `--notify`/`--session-gen`, so closing an ad-hoc shell never ends the claude
 session.
@@ -124,7 +124,7 @@ has no per-session scope — and tmux does **not** expand `#{format}` strings in
 split-window command argument. So the bindings are identical for all sessions
 and defer the container to a session environment variable, `CLD_EXEC`, which
 `ensure_session` sets per session (`SetSplitCommand`) to that session's own
-`cld x exec … -- sh -c 'exec ${SHELL:-bash} …'`. A new pane inherits its
+`cld x exec … -- sh -c '… exec "$s"'`. A new pane inherits its
 session's environment, so `sh -c "$CLD_EXEC"` resolves to the right container at
 key-press time (`internal/tmuxx.bindSplitKeys`).
 

@@ -845,8 +845,14 @@ func (d *Daemon) split_command(e *entry, id string) string {
 	}
 	argv = append(argv, id, "--")
 	// Prefer the user's login shell, then bash, then sh — devcontainer images
-	// vary. exec so the shell owns the pane and its exit closes the pane.
-	argv = append(argv, "sh", "-c", "exec ${SHELL:-bash} 2>/dev/null || exec sh")
+	// vary. Resolve the shell BEFORE exec: a redirection on `exec` is inherited
+	// by the replacing process, so silencing the exec's own failure there would
+	// send the pane shell's stderr — and that of everything run in it — to
+	// /dev/null for the pane's whole life. `|| exec sh` cannot serve as the
+	// fallback either, since a failed `exec` terminates a non-interactive shell
+	// before the `||` branch is reached. exec so the shell owns the pane and its
+	// exit closes the pane.
+	argv = append(argv, "sh", "-c", `s=${SHELL:-}; [ -x "$s" ] || s=$(command -v bash 2>/dev/null || command -v sh); exec "$s"`)
 
 	command := tmuxx.QuoteAll(argv)
 	if h := os.Getenv("DOCKER_HOST"); h != "" {
