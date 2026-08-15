@@ -34,6 +34,12 @@
 # container user at mode 0600 unless you say otherwise, and re-copied when the
 # source changes.
 #files:
+#  # cld injects the `gh` binary into containers whose workspace has a GitHub
+#  # remote, but it lands logged out; hosts.yml is where `gh auth login` keeps
+#  # the token. (`env: {GH_TOKEN: ${env:GH_TOKEN}}` works too, and keeps it off
+#  # the container's disk.)
+#  - src: ~/.config/gh/hosts.yml
+#    dst: ${HOME}/.config/gh/hosts.yml
 #  - src: ~/.config/mytool/
 #    dst: ${HOME}/.config/mytool
 

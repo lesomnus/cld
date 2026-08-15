@@ -152,6 +152,41 @@ files:
   after a daemon restart, on re-provisioning — not on a timer. A credential that
   rotates while a session is up reaches the next one.
 
+### Example: log the GitHub CLI in
+
+cld already injects the `gh` binary into any container whose workspace has a
+GitHub remote, but it lands **logged out** — so `gh pr create` in a claude
+session asks for a login it cannot complete. Hand it the login you already have
+on the host:
+
+```yaml
+files:
+  - src: ~/.config/gh/hosts.yml
+    dst: ${HOME}/.config/gh/hosts.yml
+```
+
+`hosts.yml` is where `gh auth login` stores the token (next to `config.yml`,
+which only holds preferences and is not needed). Copying just that one file
+keeps the placement to the credential itself. It lands at `0600`, owned by the
+container user, and is re-copied when you log in again on the host.
+
+If the container sets `XDG_CONFIG_HOME`, point `dst` at
+`${XDG_CONFIG_HOME}`'s `gh/hosts.yml` instead — `cld setting env <name>` shows
+whether the image sets it.
+
+The environment route works too, and keeps the token off the container's disk:
+
+```yaml
+env:
+  GH_TOKEN: ${env:GH_TOKEN}   # from the daemon's own environment
+```
+
+`${env:...}` reads the **daemon's** environment, so the token goes in the
+daemon's `docker-compose.yaml` (or `cld install`), never in `cld.yaml`.
+
+Either way the session can act as you on GitHub, so scope it with `projects` if
+you only meant it for some of your work.
+
 ## `scripts`
 
 ```yaml
