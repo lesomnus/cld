@@ -60,6 +60,15 @@
 # and shares the host kernel, and projects sharing one are not isolated from each
 # other's containers. Turn it off here or per project with `mode: off`.
 #
+# To add a volume (or dockerd flags, capabilities, limits) to the engine, put a
+# compose-shaped cld.dind.yaml next to this file — docs/session-docker.md has a
+# worked example:
+#
+#   services:
+#     dind:
+#       volumes:
+#         - /srv/build-cache:/cache    # absolute host paths only
+#
 # `scope: project` gives a project an engine of its own; only such an engine can
 # bind the workspace, which is what `docker run -v /workspace:/app` needs
 # (builds work either way — the context is streamed by the client). image and

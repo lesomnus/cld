@@ -127,10 +127,59 @@ projects:
 `cld setting env <name>` shows which one took, and where it came from — `cld
 docker` for cld's engine, `cld.yaml …` for yours.
 
+## Adding a volume to the engine
+
+The common case, start to finish. Say you want a host directory available to
+the engine — a shared build cache, a certificate bundle, a dataset your builds
+read.
+
+**1.** Create `cld.dind.yaml` next to your `cld.yaml` (that is
+`~/.config/cld/cld.dind.yaml`):
+
+```yaml
+services:
+  dind:
+    volumes:
+      - /srv/build-cache:/cache
+```
+
+The source must be an **absolute host path** — the engine resolves it on the
+host, where `~` and the daemon's own view of the filesystem mean nothing. The
+target is a path inside the engine container. Anything you add here is *added
+to* what cld already mounts; the engine keeps its own storage.
+
+**2.** Restart the daemon, which reads the config at startup:
+
+```sh
+$ docker restart cld
+```
+
+**3.** The engine is replaced on the next provisioning, because its spec
+changed — a container cannot be given a mount in place. With the shared engine
+that takes every project's running containers with it, so do this when nothing
+is mid-build. The image and build cache survive (they live in a volume).
+
+**4.** Check it:
+
+```sh
+$ cld docker -- run --rm -v /cache:/c alpine ls /c
+```
+
+That is also how the volume becomes useful: `/cache` now exists **in the
+engine**, so a `-v /cache:/...` from a session resolves to your host directory —
+the same indirection the workspace bind uses under `scope: project`.
+
+A few things to know:
+
+- With `scope: shared` (the default) the volume is on the one engine, so every
+  project gets it. Only a project with `scope: project` can have its own.
+- Read-only is `- /etc/ssl/corp:/etc/docker/certs.d:ro`.
+- A named volume cannot be created this way; give an absolute path.
+
 ## Overriding the engine container
 
-Drop a **`cld.dind.yaml`** next to your `cld.yaml` and cld folds it into the
-engine it creates:
+The volume above is one key of a larger override. Drop a **`cld.dind.yaml`**
+next to your `cld.yaml` and cld folds it into the engine it creates:
 
 ```yaml
 # ~/.config/cld/cld.dind.yaml
