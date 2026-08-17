@@ -11,7 +11,9 @@ import (
 	"github.com/goccy/go-yaml"
 	"github.com/lesomnus/cld/cmd/config"
 	"github.com/lesomnus/xli"
+	"github.com/lesomnus/xli/arg"
 	"github.com/lesomnus/xli/flg"
+	"github.com/lesomnus/xli/tab"
 	"github.com/lesomnus/z"
 )
 
@@ -35,11 +37,81 @@ func NewCmdConfig() *xli.Command {
 func new_cmd_config_edit() *xli.Command {
 	return &xli.Command{
 		Name:  "edit",
-		Brief: "open cld's own config (cld.yaml) in $EDITOR",
+		Brief: "open cld's config (cld.yaml, or the engine override) in $EDITOR",
+		Args: arg.Args{
+			&arg.String{
+				Name:     "file",
+				Brief:    "which file: `cld` (default) or `dind` (the engine override)",
+				Optional: true,
+				Handler:  completeConfigEditTargets(),
+			},
+		},
 		Handler: xli.OnRun(func(ctx context.Context, cmd *xli.Command, next xli.Next) error {
-			return editConfigFile(ctx, cmd, configEditPath(use_config.Must(ctx)))
+			c := use_config.Must(ctx)
+
+			which, _ := arg.Get[string](cmd, "file")
+			switch which {
+			case "", "cld", "cld.yaml", "config":
+				return editConfigFile(ctx, cmd, configEditPath(c))
+			case "dind", "docker", "engine":
+				p := c.DindOverrideEditPath()
+				if p == "" {
+					return fmt.Errorf("cannot resolve where the engine override lives; pass --config")
+				}
+				return editDindFile(ctx, cmd, p)
+			default:
+				return fmt.Errorf("unknown file %q: use `cld` or `dind`", which)
+			}
 		}),
 	}
+}
+
+func completeConfigEditTargets() arg.Handler[string] {
+	return arg.OnTab[string](func(ctx context.Context, t tab.Tab) {
+		t.ValueD("cld", "cld.yaml — cld's own configuration")
+		t.ValueD("dind", "cld.dind.yaml — overrides for the Docker engine cld runs")
+	})
+}
+
+// dindConfigTemplate seeds a fresh engine override. It shows the shape (a
+// compose-style service named dind) and the one rule that is not guessable —
+// volume sources are host paths — since an empty file would not parse: the
+// document has to carry that service.
+var dindConfigTemplate = []byte(
+	"# Overrides for the Docker engine cld runs for sessions.\n" +
+		"# Compose-shaped, but only the keys that map onto a container are\n" +
+		"# supported; anything else is rejected when this file is read.\n" +
+		"# See docs/session-docker.md.\n" +
+		"services:\n" +
+		"  dind:\n" +
+		"    # volumes:\n" +
+		"    #   - /srv/build-cache:/cache   # absolute HOST paths only\n" +
+		"    # command: [\"--insecure-registry\", \"registry.internal:5000\"]\n" +
+		"    # mem_limit: 8g\n")
+
+// editDindFile opens the engine override, rejecting a save cld could not act
+// on — an unknown key or a relative volume source is caught here rather than
+// silently failing to apply at the next provisioning.
+func editDindFile(ctx context.Context, cmd *xli.Command, path string) error {
+	orig, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		orig = dindConfigTemplate
+		if dir := filepath.Dir(path); dir != "." {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return fmt.Errorf("create %s: %w", dir, err)
+			}
+		}
+	} else if err != nil {
+		return err
+	}
+
+	validate := func(b []byte) error {
+		_, err := config.ParseDindFile(b, "")
+		return err
+	}
+	return editInEditor(ctx, cmd, path, orig, ".yaml", validate, "is not a usable engine override", func() {
+		fmt.Fprintln(cmd.ErrWriter, "cld: restart the daemon to load it; the engine is replaced on the next provisioning")
+	})
 }
 
 // configEditPath decides which file `cld config edit` opens: the file the

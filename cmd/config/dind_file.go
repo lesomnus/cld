@@ -156,38 +156,72 @@ func (c *Config) LoadDindOverride(local_folder string) (*DindService, error) {
 		}
 		return nil, err
 	}
+	return ParseDindFile(b, p)
+}
+
+// ParseDindFile reads an override document. where names the source in error
+// messages — normally its path; pass "" when the caller already says which file
+// it is, as `cld config edit dind` does while validating an unsaved buffer.
+// That editor path is the point of taking bytes at all: a bad override is
+// caught before it is written rather than at the next provisioning.
+func ParseDindFile(b []byte, where string) (*DindService, error) {
+	at := ""
+	if where != "" {
+		at = where + ": "
+	}
 
 	var f DindFile
 	if err := yaml.UnmarshalWithOptions(b, &f, yaml.DisallowUnknownField()); err != nil {
-		return nil, fmt.Errorf("%s: %w", p, err)
+		return nil, fmt.Errorf("%s%w", at, err)
 	}
 
 	svc, ok := f.Services[DindServiceName]
 	if !ok {
-		return nil, fmt.Errorf("%s: no %q service; the engine is configured under services.%s",
-			p, DindServiceName, DindServiceName)
+		return nil, fmt.Errorf("%sno %q service; the engine is configured under services.%s",
+			at, DindServiceName, DindServiceName)
 	}
-	if err := svc.validate(p); err != nil {
+	if err := svc.validate(at); err != nil {
 		return nil, err
 	}
 	return &svc, nil
 }
 
-func (s DindService) validate(where string) error {
+// DindOverrideEditPath is where `cld config edit dind` writes: the file
+// docker.compose names, or DindFileName in the config directory. Unlike
+// DindOverridePath it does not care whether the file exists yet — it is the
+// path one would be created at.
+func (c *Config) DindOverrideEditPath() string {
+	name := c.Docker.Compose
+	if name == "" {
+		name = DindFileName
+	}
+	if filepath.IsAbs(name) {
+		return name
+	}
+	dir := c.Dir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, name)
+}
+
+// validate checks what the schema cannot. at is a message prefix, already
+// punctuated ("path: ") or empty.
+func (s DindService) validate(at string) error {
 	for _, v := range s.Volumes {
 		src, _, ok := strings.Cut(v, ":")
 		if !ok {
-			return fmt.Errorf("%s: volume %q: want SOURCE:TARGET[:OPTIONS]", where, v)
+			return fmt.Errorf("%svolume %q: want SOURCE:TARGET[:OPTIONS]", at, v)
 		}
 		// The engine resolves these on the host, where the daemon's own view of
 		// paths does not apply.
 		if !filepath.IsAbs(src) {
-			return fmt.Errorf("%s: volume %q: SOURCE must be an absolute host path "+
-				"(a named volume or \"~\" cannot be resolved here)", where, v)
+			return fmt.Errorf("%svolume %q: SOURCE must be an absolute host path "+
+				"(a named volume or \"~\" cannot be resolved here)", at, v)
 		}
 	}
 	if s.Cpus < 0 {
-		return fmt.Errorf("%s: cpus must not be negative", where)
+		return fmt.Errorf("%scpus must not be negative", at)
 	}
 	return nil
 }

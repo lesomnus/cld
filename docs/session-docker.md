@@ -133,8 +133,9 @@ The common case, start to finish. Say you want a host directory available to
 the engine — a shared build cache, a certificate bundle, a dataset your builds
 read.
 
-**1.** Create `cld.dind.yaml` next to your `cld.yaml` (that is
-`~/.config/cld/cld.dind.yaml`):
+**1.** Open the override — `cld config edit dind` creates it next to your
+`cld.yaml` (that is `~/.config/cld/cld.dind.yaml`) with a commented template,
+and refuses to save something cld could not act on:
 
 ```yaml
 services:
@@ -142,6 +143,9 @@ services:
     volumes:
       - /srv/build-cache:/cache
 ```
+
+Writing the file by hand does the same thing; the editor just catches an
+unknown key or a relative source now instead of at the next provisioning.
 
 The source must be an **absolute host path** — the engine resolves it on the
 host, where `~` and the daemon's own view of the filesystem mean nothing. The
@@ -178,8 +182,9 @@ A few things to know:
 
 ## Overriding the engine container
 
-The volume above is one key of a larger override. Drop a **`cld.dind.yaml`**
-next to your `cld.yaml` and cld folds it into the engine it creates:
+The volume above is one key of a larger override. `cld config edit dind` opens
+it — a **`cld.dind.yaml`** next to your `cld.yaml` — and cld folds it into the
+engine it creates:
 
 ```yaml
 # ~/.config/cld/cld.dind.yaml

@@ -403,6 +403,12 @@ it (creating it on first save), `cld config` prints the effective values, and a
 global `--config <path>` overrides the choice. A `cld.yaml` in the working
 directory is used ahead of it, which is handy inside a checkout.
 
+`cld config edit dind` opens the companion file that overrides the Docker engine
+cld runs (`cld.dind.yaml`, beside it). Both editors reject a save they cannot
+parse — and the engine override also rejects keys cld cannot apply — so a
+mistake surfaces in the editor rather than as a setting that silently never
+takes.
+
 That path matters: the daemon runs in a container and reads your home through
 the read-only mount it already has, so `~/.config/cld/cld.yaml` is the one file
 both the host CLI and the daemon see. A config anywhere else reaches the client
