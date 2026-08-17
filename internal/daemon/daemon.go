@@ -294,6 +294,12 @@ type Daemon struct {
 
 	self     string // path of the cld executable, reused as pane client and watcher
 	self_ctr string // container ID when the daemon itself runs in one, else ""
+	// host_home_path is the user's home directory as the HOST names it — not
+	// the mount the daemon reads it through. It is discovered from the daemon's
+	// own mounts (see detect_host_home) because a bind cld asks for is resolved
+	// by the host's engine, where the daemon's own view of paths means nothing.
+	// Empty when it cannot be determined.
+	host_home_path string
 	sessions *sessionStore
 	proxy    *proxyStore    // per-project opt-in to broker-proxy auth (see proxyStore)
 	broker   *broker.Broker // central subscription-auth broker (see internal/broker)
@@ -354,6 +360,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.self_ctr = detect_self_container(ctx, d.cli)
 	if d.self_ctr != "" {
 		d.log.Info("running inside a container", slog.String("id", short(d.self_ctr)))
+	}
+	d.host_home_path = d.detect_host_home(ctx)
+	if d.host_home_path != "" {
+		d.log.Info("host home", slog.String("path", d.host_home_path))
 	}
 
 	if err := os.MkdirAll(d.cfg.CacheDir, 0o755); err != nil {

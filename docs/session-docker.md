@@ -147,10 +147,15 @@ services:
 Writing the file by hand does the same thing; the editor just catches an
 unknown key or a relative source now instead of at the next provisioning.
 
-The source must be an **absolute host path** — the engine resolves it on the
-host, where `~` and the daemon's own view of the filesystem mean nothing. The
-target is a path inside the engine container. Anything you add here is *added
-to* what cld already mounts; the engine keeps its own storage.
+The source is a **host path**, because the engine resolves it on the host. Write
+it absolute, or against your home — `~/workspaces:/workspaces` and
+`${HOME}/workspaces:/workspaces` both work, since cld knows the host's own home
+and expands them before creating the engine. Anything else relative, and a named
+volume, is rejected: they cannot be resolved there. The target is a path inside
+the engine container, and is never expanded.
+
+Anything you add is *added to* what cld already mounts; the engine keeps its own
+storage.
 
 **2.** Restart the daemon, which reads the config at startup:
 
@@ -178,7 +183,11 @@ A few things to know:
 - With `scope: shared` (the default) the volume is on the one engine, so every
   project gets it. Only a project with `scope: project` can have its own.
 - Read-only is `- /etc/ssl/corp:/etc/docker/certs.d:ro`.
-- A named volume cannot be created this way; give an absolute path.
+- A named volume cannot be created this way; give a path.
+- `~` expands to your **host** home, not the daemon's or the container's. If cld
+  cannot determine it — a daemon installed without the home mount — it says so
+  and leaves the engine alone rather than creating a directory named `~` on your
+  host.
 
 ## Overriding the engine container
 
@@ -192,7 +201,7 @@ services:
   dind:
     command: ["--insecure-registry", "registry.internal:5000"]
     volumes:
-      - /etc/ssl/corp:/etc/docker/certs.d:ro   # absolute host paths only
+      - /etc/ssl/corp:/etc/docker/certs.d:ro   # HOST paths (~/ expands)
     environment:
       HTTP_PROXY: http://proxy.internal:3128
     mem_limit: 8g

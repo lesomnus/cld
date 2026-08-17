@@ -85,7 +85,7 @@ var dindConfigTemplate = []byte(
 		"services:\n" +
 		"  dind:\n" +
 		"    # volumes:\n" +
-		"    #   - /srv/build-cache:/cache   # absolute HOST paths only\n" +
+		"    #   - /srv/build-cache:/cache   # HOST paths; ~/ and ${HOME}/ expand\n" +
 		"    # command: [\"--insecure-registry\", \"registry.internal:5000\"]\n" +
 		"    # mem_limit: 8g\n")
 

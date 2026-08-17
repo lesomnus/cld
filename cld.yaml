@@ -67,7 +67,7 @@
 #   services:
 #     dind:
 #       volumes:
-#         - /srv/build-cache:/cache    # absolute host paths only
+#         - /srv/build-cache:/cache    # HOST paths (~/ and ${HOME}/ expand)
 #
 # `scope: project` gives a project an engine of its own; only such an engine can
 # bind the workspace, which is what `docker run -v /workspace:/app` needs

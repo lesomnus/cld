@@ -186,6 +186,14 @@ func ParseDindFile(b []byte, where string) (*DindService, error) {
 	return &svc, nil
 }
 
+// isHomeRelative reports whether a path is written against the home directory,
+// which the daemon expands to the host's own spelling of it before creating the
+// engine (see daemon.expand_dind_volumes).
+func isHomeRelative(p string) bool {
+	return p == "~" || p == "${HOME}" ||
+		strings.HasPrefix(p, "~/") || strings.HasPrefix(p, "${HOME}/")
+}
+
 // DindOverrideEditPath is where `cld config edit dind` writes: the file
 // docker.compose names, or DindFileName in the config directory. Unlike
 // DindOverridePath it does not care whether the file exists yet — it is the
@@ -213,11 +221,13 @@ func (s DindService) validate(at string) error {
 		if !ok {
 			return fmt.Errorf("%svolume %q: want SOURCE:TARGET[:OPTIONS]", at, v)
 		}
-		// The engine resolves these on the host, where the daemon's own view of
-		// paths does not apply.
-		if !filepath.IsAbs(src) {
-			return fmt.Errorf("%svolume %q: SOURCE must be an absolute host path "+
-				"(a named volume or \"~\" cannot be resolved here)", at, v)
+		// The engine resolves these on the HOST, so the source has to name a
+		// host path. "~/" and "${HOME}/" are allowed because cld knows the
+		// host's home (it is mounted into the daemon) and expands them; nothing
+		// else relative can be resolved, and a named volume is not a path.
+		if !filepath.IsAbs(src) && !isHomeRelative(src) {
+			return fmt.Errorf("%svolume %q: SOURCE must be a host path — absolute, "+
+				"or under \"~/\" or \"${HOME}/\" (a named volume is not a path)", at, v)
 		}
 	}
 	if s.Cpus < 0 {

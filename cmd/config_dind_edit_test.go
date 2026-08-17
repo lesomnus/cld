@@ -54,10 +54,13 @@ func TestDindOverrideEditValidation(t *testing.T) {
 
 	require.NoError(t, valid(dindConfigTemplate), "the seeded template must save as-is")
 	require.NoError(t, valid([]byte("services:\n  dind:\n    volumes: [/a:/b]\n")))
+	require.NoError(t, valid([]byte("services:\n  dind:\n    volumes: [\"~/a:/b\"]\n")))
+	require.NoError(t, valid([]byte("services:\n  dind:\n    volumes: [\"${HOME}/a:/b\"]\n")))
 
 	require.Error(t, valid([]byte("services:\n  dind:\n    healthcheck: {test: [CMD, true]}\n")))
 	require.Error(t, valid([]byte("services:\n  docker:\n    cpus: 2\n")))
-	require.Error(t, valid([]byte("services:\n  dind:\n    volumes: [\"~/a:/b\"]\n")))
+	require.Error(t, valid([]byte("services:\n  dind:\n    volumes: [\"cache:/b\"]\n")),
+		"a named volume is not a host path")
 	require.Error(t, valid([]byte("not: yaml: at all:\n")))
 	require.Error(t, valid(nil), "an empty buffer has no dind service")
 }

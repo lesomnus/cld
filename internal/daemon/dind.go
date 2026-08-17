@@ -9,6 +9,8 @@ import (
 	"io"
 	"log/slog"
 	"net/netip"
+	"os"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -97,9 +99,13 @@ func (d *Daemon) ensure_dind(ctx context.Context, e *entry, id string) {
 		return
 	}
 	over, err := d.cfg.LoadDindOverride(e.item.LocalFolder)
+	if err == nil {
+		over, err = expand_dind_volumes(over, d.host_home_path)
+	}
 	if err != nil {
-		// The user wrote an override cld could not read; running the engine
-		// without it would apply settings they think are in effect.
+		// The user wrote an override cld could not read or could not resolve;
+		// running the engine without it would apply settings they think are in
+		// effect.
 		log.Warn("dind: override failed", slog.String("error", err.Error()))
 		return
 	}
@@ -393,6 +399,81 @@ func sorted_keys(m map[string]string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// detect_host_home finds the user's home directory as the HOST names it, by
+// looking at what the daemon's own container mounts at HostHomeMount. The
+// daemon reads that home at /host-home, but a bind it asks the engine for is
+// resolved on the host — so "~/x" in an override can only be expanded with the
+// host's own spelling of the path, which nothing else tells the daemon.
+//
+// A daemon not running in a container (tests, development) falls back to its
+// own home, which in that case IS the host's.
+func (d *Daemon) detect_host_home(ctx context.Context) string {
+	if d.self_ctr == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		return home
+	}
+
+	insp, err := d.cli.ContainerInspect(ctx, d.self_ctr, client.ContainerInspectOptions{})
+	if err != nil {
+		return ""
+	}
+	for _, m := range insp.Container.Mounts {
+		if m.Destination == config.HostHomeMount {
+			return m.Source
+		}
+	}
+	return ""
+}
+
+// expand_dind_volumes rewrites the override's volume sources into paths the
+// host engine can resolve, since that is who resolves them. It returns an error
+// rather than passing "~/x" through: Docker would take that literally and
+// create a directory of that name, which looks like it worked.
+func expand_dind_volumes(o *config.DindService, home string) (*config.DindService, error) {
+	if o == nil || len(o.Volumes) == 0 {
+		return o, nil
+	}
+
+	out := *o
+	out.Volumes = make([]string, 0, len(o.Volumes))
+	for _, v := range o.Volumes {
+		src, rest, ok := strings.Cut(v, ":")
+		if !ok {
+			return nil, fmt.Errorf("volume %q: want SOURCE:TARGET[:OPTIONS]", v)
+		}
+		expanded, ok := expand_host_path(src, home)
+		if !ok {
+			return nil, fmt.Errorf("volume %q: cld cannot tell what %q is on the host; "+
+				"write the path out, or reinstall the daemon so it can see your home", v, src)
+		}
+		out.Volumes = append(out.Volumes, expanded+":"+rest)
+	}
+	return &out, nil
+}
+
+// expand_host_path resolves a leading "~/" or "${HOME}/" against the host's
+// home. ok is false only when the path needs a home that is not known; a path
+// with neither prefix is returned untouched.
+func expand_host_path(p, home string) (string, bool) {
+	rest := ""
+	switch {
+	case p == "~" || p == "${HOME}":
+	case strings.HasPrefix(p, "~/"):
+		rest = p[2:]
+	case strings.HasPrefix(p, "${HOME}/"):
+		rest = p[len("${HOME}/"):]
+	default:
+		return p, true
+	}
+	if home == "" {
+		return "", false
+	}
+	return path.Join(home, rest), true
 }
 
 // dind_binds is the engine's storage, plus the workspace for an engine that

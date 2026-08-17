@@ -55,6 +55,68 @@ func TestDindBinds(t *testing.T) {
 	})
 }
 
+// A bind is resolved by the HOST engine, so a "~/x" the daemon passed through
+// unchanged would have Docker create a directory literally named "~" — looking
+// for all the world like it worked.
+func TestExpandDindVolumes(t *testing.T) {
+	const home = "/home/me"
+
+	t.Run("expands both spellings, in the source only", func(t *testing.T) {
+		got, err := expand_dind_volumes(&config.DindService{Volumes: []string{
+			"~/certs:/certs",
+			"${HOME}/workspaces:/workspaces",
+			"${HOME}:/home-ro:ro",
+			"~:/h",
+		}}, home)
+		require.NoError(t, err)
+		require.Equal(t, []string{
+			"/home/me/certs:/certs",
+			"/home/me/workspaces:/workspaces",
+			"/home/me:/home-ro:ro",
+			"/home/me:/h",
+		}, got.Volumes)
+	})
+
+	t.Run("leaves an absolute source alone", func(t *testing.T) {
+		got, err := expand_dind_volumes(&config.DindService{
+			Volumes: []string{"/srv/cache:/cache"},
+		}, home)
+		require.NoError(t, err)
+		require.Equal(t, []string{"/srv/cache:/cache"}, got.Volumes)
+	})
+
+	t.Run("does not touch the target", func(t *testing.T) {
+		// Only the source names a host path; the target is inside the engine.
+		got, err := expand_dind_volumes(&config.DindService{
+			Volumes: []string{"/srv/x:/opt/${HOME}"},
+		}, home)
+		require.NoError(t, err)
+		require.Equal(t, []string{"/srv/x:/opt/${HOME}"}, got.Volumes)
+	})
+
+	t.Run("fails when the host home is unknown", func(t *testing.T) {
+		// Better than creating a directory named "~" on the host.
+		_, err := expand_dind_volumes(&config.DindService{
+			Volumes: []string{"~/certs:/certs"},
+		}, "")
+		require.ErrorContains(t, err, "cannot tell what")
+	})
+
+	t.Run("nothing to do", func(t *testing.T) {
+		got, err := expand_dind_volumes(nil, home)
+		require.NoError(t, err)
+		require.Nil(t, got)
+	})
+
+	t.Run("the original is left untouched", func(t *testing.T) {
+		// It is the loaded config; another project reads the same one.
+		in := &config.DindService{Volumes: []string{"~/a:/a"}}
+		_, err := expand_dind_volumes(in, home)
+		require.NoError(t, err)
+		require.Equal(t, []string{"~/a:/a"}, in.Volumes)
+	})
+}
+
 func TestDindKey(t *testing.T) {
 	d, cfg := newTestDaemon(t)
 	e := &entry{item: Item{LocalFolder: "/work/api"}}

@@ -107,13 +107,23 @@ projects:
 		require.ErrorContains(t, err, "dind")
 	})
 
-	t.Run("rejects a relative volume source", func(t *testing.T) {
-		// The engine resolves it on the host, where the daemon's own view of
-		// paths — and "~" — means nothing.
+	t.Run("accepts home-relative volume sources", func(t *testing.T) {
+		// The daemon knows the host's own home (it is mounted into it) and
+		// expands these before creating the engine.
 		c := withOverride(t, "docker: {mode: dind}\n", config.DindFileName,
-			"services:\n  dind:\n    volumes: [\"~/certs:/certs\"]\n")
+			"services:\n  dind:\n    volumes: [\"~/certs:/certs\", \"${HOME}/workspaces:/workspaces\"]\n")
+		got, err := c.LoadDindOverride("/work/api")
+		require.NoError(t, err)
+		require.Equal(t, []string{"~/certs:/certs", "${HOME}/workspaces:/workspaces"}, got.Volumes)
+	})
+
+	t.Run("rejects a source that is neither a host path nor home-relative", func(t *testing.T) {
+		// A named volume or a bare relative path cannot be resolved by the
+		// engine, which reads these as paths on the host.
+		c := withOverride(t, "docker: {mode: dind}\n", config.DindFileName,
+			"services:\n  dind:\n    volumes: [\"cache:/cache\", \"./rel:/x\"]\n")
 		_, err := c.LoadDindOverride("/work/api")
-		require.ErrorContains(t, err, "absolute host path")
+		require.ErrorContains(t, err, "must be a host path")
 	})
 }
 
