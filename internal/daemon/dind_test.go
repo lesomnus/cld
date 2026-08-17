@@ -129,14 +129,23 @@ func TestDindSpec(t *testing.T) {
 	})
 
 	t.Run("the shared engine is the same whichever project asks", func(t *testing.T) {
-		// It must be: every project resolves the same spec, so none of them
-		// rebuilds the engine the others are using.
+		// The invariant the whole arrangement rests on: every project must
+		// resolve the SAME spec, or each would rebuild the engine the others
+		// are using — on every reconcile, forever.
 		shared := config.DockerConfig{Mode: config.DockerModeDind, Image: "docker:dind"}
-		a := dind_spec_hash(dind_create_options(e, dindSharedKey, "net", shared, nil))
-		b := dind_spec_hash(dind_create_options(
-			&entry{item: Item{LocalFolder: "/host/other", Workspace: "/w2"}},
-			dindSharedKey, "net", shared, nil))
-		require.Equal(t, a, b)
+		want := dind_spec_hash(dind_create_options(e, dindSharedKey, "net", shared, nil))
+
+		for _, other := range []*entry{
+			{item: Item{LocalFolder: "/host/other", Workspace: "/w2"}},
+			{dev_name: "svc", user: "root", home: "/root",
+				item: Item{Name: "svc", LocalFolder: "/elsewhere/svc", Workspace: "/src"}},
+			{}, // not resolved at all
+		} {
+			opts := dind_create_options(other, dindSharedKey, "net", shared, nil)
+			require.Equal(t, want, dind_spec_hash(opts),
+				"a project must not reshape the engine it shares")
+			require.Equal(t, "cld-dind", opts.Name)
+		}
 	})
 
 	t.Run("changes with any override", func(t *testing.T) {

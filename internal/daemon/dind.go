@@ -186,12 +186,45 @@ func (d *Daemon) ensure_dind_engine(ctx context.Context, e *entry, key, net stri
 
 	created, err := d.cli.ContainerCreate(ctx, opts)
 	if err != nil {
+		// Another container's worker got there first — each reconciles on its
+		// own goroutine, and with a shared engine they all want the same one,
+		// which is exactly what happens when the daemon restarts with several
+		// devcontainers up. Adopt what it created instead of failing this
+		// project into a session with no DOCKER_HOST.
+		if id := d.adopt_dind(ctx, key, sum, err); id != "" {
+			return id, nil
+		}
 		return "", fmt.Errorf("create engine: %w", err)
 	}
 	if _, err := d.cli.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
 		return "", fmt.Errorf("start engine: %w", err)
 	}
 	return created.ID, nil
+}
+
+// adopt_dind resolves a lost creation race: it returns the engine another
+// worker created, but only when the create failed because the name was taken
+// AND what is there matches the spec this one wanted. Anything else is left to
+// the caller to report.
+func (d *Daemon) adopt_dind(ctx context.Context, key, sum string, cause error) string {
+	if !strings.Contains(cause.Error(), "already in use") {
+		return ""
+	}
+	id, err := d.find_dind(ctx, key)
+	if err != nil || id == "" {
+		return ""
+	}
+	insp, err := d.cli.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
+	if err != nil || !dind_matches(insp.Container, sum) {
+		return ""
+	}
+	// It may still be starting; the caller waits for it to answer either way.
+	if insp.Container.State == nil || !insp.Container.State.Running {
+		if _, err := d.cli.ContainerStart(ctx, id, client.ContainerStartOptions{}); err != nil {
+			return ""
+		}
+	}
+	return id
 }
 
 // dind_create_options is cld's own engine definition with the user's override
