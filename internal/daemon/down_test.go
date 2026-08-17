@@ -33,6 +33,7 @@ func TestDown(t *testing.T) {
 	cfg := &config.Config{
 		CacheDir: filepath.Join(tmp, "cache"),
 		DataDir:  filepath.Join(tmp, "data"),
+		Docker:   config.DockerConfig{Mode: config.DockerModeOff},
 		Release: config.ReleaseConfig{
 			BaseURL:       server.URL,
 			Channel:       "stable",
@@ -121,6 +122,7 @@ func TestDownAll(t *testing.T) {
 	cfg := &config.Config{
 		CacheDir: filepath.Join(tmp, "cache"),
 		DataDir:  filepath.Join(tmp, "data"),
+		Docker:   config.DockerConfig{Mode: config.DockerModeOff},
 		Release: config.ReleaseConfig{
 			BaseURL:       server.URL,
 			Channel:       "stable",
@@ -243,6 +245,7 @@ func TestDownAllSkipsUnmanaged(t *testing.T) {
 	cfg := &config.Config{
 		CacheDir: filepath.Join(tmp, "cache"),
 		DataDir:  filepath.Join(tmp, "data"),
+		Docker:   config.DockerConfig{Mode: config.DockerModeOff},
 	}
 	d, err := New(cfg, cli, slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	require.NoError(t, err)
@@ -299,7 +302,7 @@ func TestDownTargetsSparesIgnoredSibling(t *testing.T) {
 	cli := require_docker(t)
 	pull_image(t, cli)
 
-	d, err := New(&config.Config{CacheDir: t.TempDir()}, cli, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	d, err := New(&config.Config{CacheDir: t.TempDir(), Docker: dockerOff}, cli, slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	require.NoError(t, err)
 
 	project := fmt.Sprintf("cld-test-proj-%d", time.Now().UnixNano())

@@ -48,7 +48,7 @@ func TestInstallFiles(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(host_home, "certs", "ca.pem"), []byte("ca"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(host_home, "certs", "sub", "key.pem"), []byte("key"), 0o644))
 
-	cfg := &config.Config{CacheDir: t.TempDir(), DataDir: t.TempDir(), HostHome: host_home}
+	cfg := &config.Config{CacheDir: t.TempDir(), DataDir: t.TempDir(), HostHome: host_home, Docker: dockerOff}
 	cfg.Files = []config.FileSpec{
 		{Src: "~/token", Dst: "${HOME}/.config/svc/token"},
 		{Src: "~/certs", Dst: "${HOME}/.docker-remote", Mode: "0640"},
@@ -124,7 +124,7 @@ func TestRunScripts(t *testing.T) {
 	cli := require_docker(t)
 	id := run_container_labeled(t, cli, "", map[string]string{})
 
-	cfg := &config.Config{CacheDir: t.TempDir(), DataDir: t.TempDir()}
+	cfg := &config.Config{CacheDir: t.TempDir(), DataDir: t.TempDir(), Docker: dockerOff}
 	cfg.Env = config.EnvMap{"GREETING": strp("hello")}
 	cfg.Scripts = config.ScriptSet{
 		Setup: &config.ScriptSpec{Run: config.ScriptRun{
@@ -205,7 +205,7 @@ func TestSessionEnvUnsetInContainer(t *testing.T) {
 	cli := require_docker(t)
 	id := run_container_labeled(t, cli, "", map[string]string{})
 
-	cfg := &config.Config{CacheDir: t.TempDir(), DataDir: t.TempDir()}
+	cfg := &config.Config{CacheDir: t.TempDir(), DataDir: t.TempDir(), Docker: dockerOff}
 	cfg.Env = config.EnvMap{"REMOVED": nil, "KEPT": strp("yes")}
 	d, err := New(cfg, cli, slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	require.NoError(t, err)

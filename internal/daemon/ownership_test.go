@@ -42,6 +42,7 @@ func TestRestoreOwnsProjectsForNonRootUser(t *testing.T) {
 	cfg := &config.Config{
 		CacheDir: filepath.Join(tmp, "cache"),
 		DataDir:  filepath.Join(tmp, "data"),
+		Docker:   config.DockerConfig{Mode: config.DockerModeOff},
 		Release: config.ReleaseConfig{
 			BaseURL:       server.URL,
 			Channel:       "stable",
@@ -140,6 +141,7 @@ func TestShareClaudeConfig(t *testing.T) {
 	cfg := &config.Config{
 		CacheDir: filepath.Join(tmp, "cache"),
 		DataDir:  filepath.Join(tmp, "data"),
+		Docker:   config.DockerConfig{Mode: config.DockerModeOff},
 		Release: config.ReleaseConfig{
 			BaseURL:       server.URL,
 			Channel:       "stable",

@@ -59,6 +59,7 @@ func purge_test_config(tmp string, server_url string) *config.Config {
 	return &config.Config{
 		CacheDir: filepath.Join(tmp, "cache"),
 		DataDir:  filepath.Join(tmp, "data"),
+		Docker:   config.DockerConfig{Mode: config.DockerModeOff},
 		Release: config.ReleaseConfig{
 			BaseURL:       server_url,
 			Channel:       "stable",

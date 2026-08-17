@@ -386,10 +386,12 @@ func TestDindDisabled(t *testing.T) {
 // An engine is on by default, so a project that says nothing gets one. This is
 // the assertion that fails first if the default is ever flipped back.
 func TestDindEnabledByDefault(t *testing.T) {
-	d, _ := newTestDaemon(t)
-	got := d.cfg.DockerFor("/work/api")
+	// Deliberately not newTestDaemon, which turns the engine off the way every
+	// other test wants it: this is the assertion about the shipped default.
+	got := (&config.Config{}).DockerFor("/work/api")
 	require.True(t, got.Enabled())
 	require.True(t, got.Shared())
+	require.Equal(t, config.DockerImageDefault, got.Image)
 }
 
 // TestDindLifecycle drives the whole thing against a real engine: the private

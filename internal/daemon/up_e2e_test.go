@@ -48,6 +48,7 @@ func TestUpE2E(t *testing.T) {
 	cfg := &config.Config{
 		CacheDir: filepath.Join(tmp, "cache"),
 		DataDir:  filepath.Join(tmp, "data"),
+		Docker:   config.DockerConfig{Mode: config.DockerModeOff},
 		Release:  config.ReleaseConfig{BaseURL: server.URL, Channel: "stable", CheckInterval: config.Duration(time.Hour)},
 		Sync:     config.SyncConfig{Debounce: config.Duration(200 * time.Millisecond), FallbackInterval: config.Duration(time.Minute)},
 	}

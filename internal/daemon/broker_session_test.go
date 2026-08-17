@@ -15,10 +15,17 @@ import (
 
 // newTestDaemon builds a daemon with no docker client; enough for the pure
 // policy helpers (session_env, broker_session) that touch only cfg and broker.
+// dockerOff is what a test daemon runs with unless it is testing the engine
+// itself. An engine is the production default, so without this every test that
+// provisions a container would pull docker:dind and run a privileged container
+// — slow, and left behind whenever a run is interrupted. The dind tests ask for
+// one explicitly.
+var dockerOff = config.DockerConfig{Mode: config.DockerModeOff}
+
 func newTestDaemon(t *testing.T) (*Daemon, *config.Config) {
 	t.Helper()
 	tmp := t.TempDir()
-	cfg := &config.Config{CacheDir: filepath.Join(tmp, "cache"), DataDir: filepath.Join(tmp, "data")}
+	cfg := &config.Config{CacheDir: filepath.Join(tmp, "cache"), DataDir: filepath.Join(tmp, "data"), Docker: dockerOff}
 	d, err := New(cfg, nil, slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	require.NoError(t, err)
 	return d, cfg
