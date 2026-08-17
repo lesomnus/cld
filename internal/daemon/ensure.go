@@ -179,6 +179,12 @@ func (d *Daemon) ensure_(ctx context.Context, e *entry) error {
 	// name, and before the session, so claude sees it from its first prompt.
 	d.install_files(ctx, e, id)
 
+	// Best-effort: bring up this project's own Docker engine and attach the
+	// container to it, when the config asks for one. Before the scripts, so a
+	// setup script can already use it, and before the session, so DOCKER_HOST
+	// is part of the environment claude starts with.
+	d.ensure_dind(ctx, e, id)
+
 	// The user's own scripts, last of the provisioning steps: everything cld
 	// installs is in place, so a script can build on it, and the session does
 	// not exist yet, so what a script installs is there from claude's first
@@ -343,6 +349,10 @@ func (d *Daemon) stop(ctx context.Context, e *entry) {
 // the container is gone for good, so finalize and drop the entry.
 func (d *Daemon) teardown(ctx context.Context, e *entry) {
 	d.stop(ctx, e)
+	// The devcontainer is gone for good, so its engine has nothing left to
+	// serve. This is the path a plain `docker rm` takes, where nothing else
+	// would ever clean it up.
+	d.remove_dind(ctx, e)
 	d.sessions.clear(e.id)
 	d.remove(e)
 	d.log.Info("retired", slog.String("id", short(e.id)), slog.String("name", e.item.Name))
@@ -892,6 +902,7 @@ func (d *Daemon) split_command(e *entry, id string) string {
 const (
 	envOriginRemote  = "devcontainer remoteEnv"
 	envOriginDefault = "cld default"
+	envOriginDocker  = "cld docker"
 	envOriginConfig  = "cld.yaml env"
 	envOriginManaged = "cld"
 )
@@ -911,6 +922,16 @@ func (d *Daemon) session_env(e *entry) envx.Result {
 	layers := []envx.Layer{
 		{Origin: envOriginRemote, Vars: envPtrs(e.remote_env)},
 		{Origin: envOriginDefault, Vars: envPtrs(d.env_defaults())},
+	}
+	// The engine cld runs for this project, if any. Below the config layers on
+	// purpose: it is a default, not a promise, so a user who points DOCKER_HOST
+	// at a real remote engine still wins — which is why DOCKER_HOST is not a
+	// reserved key.
+	if e.docker_host != "" {
+		layers = append(layers, envx.Layer{
+			Origin: envOriginDocker,
+			Vars:   envPtrs(map[string]string{"DOCKER_HOST": e.docker_host}),
+		})
 	}
 	layers = append(layers, d.env_user_layers(e)...)
 	layers = append(layers, envx.Layer{Origin: envOriginManaged, Vars: envPtrs(d.env_managed(e))})

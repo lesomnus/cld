@@ -185,6 +185,11 @@ type entry struct {
 	// remote_env is the devcontainer's own remoteEnv, which cld applies to the
 	// sessions it starts the way VS Code applies it to the terminals it opens.
 	remote_env map[string]string
+	// docker_host points at the project's own engine when cld runs one for it
+	// (see ensure_dind), and is empty otherwise — including when the engine was
+	// asked for but could not be brought up, so a session is never pointed at
+	// an engine that is not there.
+	docker_host string
 
 	platform release.Platform
 	arch     string // container arch reported by the image ("amd64"/"arm64"); for gh

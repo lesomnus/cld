@@ -108,10 +108,16 @@ dind 안에서 `docker run -v $(pwd):/app`을 하면 그 경로는 **엔진 컨�
 - [x] 1. 계획 문서 (이 파일)
 - [x] 2. 설정 스키마 — `docker:` 전역/프로젝트, 해석과 검증 (`cmd/config/docker.go`).
       프로젝트 블록은 **필드 단위**로 덮어쓴다 — 이미지만 바꾸려다 mode가 날아가면 안 된다.
-- [ ] 3. `ensure_dind` — 네트워크·볼륨·엔진 생성, 연결, 준비 대기, `DOCKER_HOST` 레이어
-- [ ] 4. 정리 — `down`/`purge`가 엔진·네트워크·볼륨을 함께 처리
-- [ ] 5. 통합 테스트 — 실제 엔진에 대고 생성·연결·재사용·정리
-- [ ] 6. 사용자 문서 — `docs/session-docker.md`, README, cld.yaml, 위험 고지
+- [x] 3. `ensure_dind` — 네트워크·볼륨·엔진 생성, 연결, 준비 대기, `DOCKER_HOST` 레이어
+      (`internal/daemon/dind.go`). 전부 best-effort: 실패하면 `DOCKER_HOST`를 넣지
+      않는다 — 없는 엔진을 가리키는 것보다 없는 편이 낫다.
+- [x] 4. 정리 — `down`/`purge`가 엔진·네트워크·볼륨을 함께 처리, destroy 이벤트에서도
+      제거(`docker rm`으로 devcontainer만 지웠을 때 특권 엔진이 남지 않도록).
+      네트워크 삭제 전 남은 엔드포인트를 강제 disconnect한다 — devcontainer가 아직
+      붙어 있으면 Docker가 삭제를 거부하는데, 통합 테스트에서 실제로 걸렸다.
+- [x] 5. 통합 테스트 — 실제 `docker:dind`를 받아 띄우고, devcontainer에서 `/_ping`이
+      닿는 것까지 확인(`dind_test.go`). 재사용·교체·정리도 포함.
+- [x] 6. 사용자 문서 — `docs/session-docker.md`, README, cld.yaml, 위험 고지
 
 ## 범위 밖
 
