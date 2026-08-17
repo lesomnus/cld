@@ -389,6 +389,17 @@ $ source <(cld completion zsh)   # or add this line to ~/.zshrc
 
 ## Configuration
 
+cld's own config lives at **`~/.config/cld/cld.yaml`**. `cld config edit` opens
+it (creating it on first save), `cld config` prints the effective values, and a
+global `--config <path>` overrides the choice. A `cld.yaml` in the working
+directory is used ahead of it, which is handy inside a checkout.
+
+That path matters: the daemon runs in a container and reads your home through
+the read-only mount it already has, so `~/.config/cld/cld.yaml` is the one file
+both the host CLI and the daemon see. A config anywhere else reaches the client
+commands only. **Restart the daemon** (`docker restart cld`) after changing
+anything the daemon acts on.
+
 All settings are optional; see `cld.yaml` for the full list with defaults.
 
 By default each container logs in for itself and cld persists that login to the

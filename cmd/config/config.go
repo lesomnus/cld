@@ -2,14 +2,48 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 
 	"github.com/goccy/go-yaml"
 	"github.com/lesomnus/z"
 )
 
-var DefaultConfigPaths = []string{
-	"cld.yaml",
-	"cld.yml",
+// DefaultConfigPaths are the config files looked for, in order, when no
+// --config is given. The working directory comes first (handy while developing
+// against a checkout), then the user's own config directory — which is the one
+// that matters in practice, because it is the only place BOTH the host CLI and
+// the containerized daemon can see the same file.
+func DefaultConfigPaths() []string {
+	paths := []string{"cld.yaml", "cld.yml"}
+	if dir := UserConfigDir(); dir != "" {
+		paths = append(paths, filepath.Join(dir, "cld.yaml"), filepath.Join(dir, "cld.yml"))
+	}
+	return paths
+}
+
+// UserConfigDirName is where a user's cld config lives under the home
+// directory. It is spelled out rather than resolved through $XDG_CONFIG_HOME so
+// the host CLI and the daemon always agree on one path: the daemon sees the
+// host home through a read-only mount and has no way to know what
+// XDG_CONFIG_HOME meant on the host.
+const UserConfigDirName = ".config/cld"
+
+// UserConfigDir is the user's cld config directory as the running process can
+// reach it: under the mounted host home when this is the containerized daemon,
+// and under this user's own home otherwise. Returns "" when neither is known.
+//
+// This is what lets `cld install` keep mounting nothing but the cache, data and
+// home directories while the daemon still reads the config the user edits on
+// the host.
+func UserConfigDir() string {
+	if h := os.Getenv(HostHomeEnv); h != "" {
+		return filepath.Join(h, UserConfigDirName)
+	}
+	h, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(h, UserConfigDirName)
 }
 
 const (

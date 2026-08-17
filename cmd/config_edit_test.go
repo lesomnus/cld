@@ -28,8 +28,12 @@ func TestValidCldConfig(t *testing.T) {
 }
 
 func TestConfigEditPath(t *testing.T) {
-	// No config file loaded: fall back to the first default name.
-	require.Equal(t, config.DefaultConfigPaths[0], configEditPath(&config.Config{}))
+	// No config file loaded yet: create it in the user config dir, which is the
+	// only place the containerized daemon can read it from too. A cwd cld.yaml
+	// would be edited happily and then never reach the daemon.
+	require.Equal(t,
+		filepath.Join(config.UserConfigDir(), "cld.yaml"),
+		configEditPath(&config.Config{}))
 
 	// A loaded config edits the very file it came from.
 	p := filepath.Join(t.TempDir(), "custom.yaml")

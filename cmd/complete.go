@@ -18,7 +18,7 @@ import (
 func completeNames() arg.Handler[string] {
 	return arg.OnTab[string](func(ctx context.Context, t tab.Tab) {
 		c := &config.Config{}
-		for _, p := range config.DefaultConfigPaths {
+		for _, p := range config.DefaultConfigPaths() {
 			if cc, err := config.ReadFromFile(p); err == nil {
 				c = cc
 				break
