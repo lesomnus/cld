@@ -455,6 +455,11 @@ func (d *Daemon) handle_teardown_all(w http.ResponseWriter, _ *http.Request, pur
 		results = append(results, res)
 	}
 
+	// Nothing is left to share the engine, so it goes too — a privileged
+	// container should not outlive the last devcontainer it served. A purge
+	// takes its accumulated cache with it; a down leaves that for next time.
+	d.remove_shared_dind(d.base_ctx, purge)
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"results": results})
 }
@@ -777,7 +782,7 @@ func (d *Daemon) handle_get_engine(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !res.configured {
-		http.Error(w, "no engine: this project does not have `docker: {mode: dind}`",
+		http.Error(w, "no engine: this project is configured with `docker: {mode: off}`",
 			http.StatusConflict)
 		return
 	}

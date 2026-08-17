@@ -51,14 +51,23 @@
 #  setup: sudo apt-get update && sudo apt-get install -y ripgrep
 #  start: echo "started ${CLD_NAME}"
 
-# Give a session a Docker engine of its own: a docker-in-docker container on a
-# private network, with DOCKER_HOST pointed at it. Off by default, and read
-# docs/session-docker.md before turning it on — an engine is root on that
-# engine, the engine container is privileged and shares the host kernel, and
-# enabling it is a risk you are choosing to take. Usually scoped to the projects
-# that need it (see projects below) rather than set globally.
+# A Docker engine for sessions: a docker-in-docker container on a private
+# network, with DOCKER_HOST pointed at it. ON by default, and shared by every
+# project — one BuildKit cache every build warms, one daemon's memory.
+#
+# Read docs/session-docker.md before leaving it on: an engine is root on that
+# engine for claude and anything claude runs, the engine container is privileged
+# and shares the host kernel, and projects sharing one are not isolated from each
+# other's containers. Turn it off here or per project with `mode: off`.
+#
+# `scope: project` gives a project an engine of its own; only such an engine can
+# bind the workspace, which is what `docker run -v /workspace:/app` needs
+# (builds work either way — the context is streamed by the client). image and
+# compose shape the engine, so a project block may set them only together with
+# `scope: project`; for the shared engine they are set here, for everyone.
 #docker:
-#  mode: dind          # off (default) | dind
+#  mode: dind          # dind (default) | off
+#  scope: shared       # shared (default) | project
 #  image: docker:dind  # pin it (docker:28-dind), or soften it (docker:dind-rootless)
 #  # A compose-shaped override for the engine container, resolved against this
 #  # file's directory. Defaults to cld.dind.yaml when that exists; naming one
@@ -89,7 +98,7 @@
 #        timeout: 10m
 #        on_error: fail
 #    docker:
-#      mode: dind      # an engine for this project only
+#      scope: project  # an engine of its own, so `-v $(pwd)` works
 
 auth:
   # By default each container logs in for itself: run `claude` inside it and

@@ -276,6 +276,18 @@ func (c *Config) evaluateSession() error {
 	if err := validateDocker(c.Docker, "docker"); err != nil {
 		return err
 	}
+	// Spell the engine defaults out in the loaded config, so `cld config` says
+	// whether a session gets one instead of printing an empty string for the
+	// setting that decides it. Resolution applies the same defaults anyway.
+	if c.Docker.Mode == "" {
+		c.Docker.Mode = DockerModeDefault
+	}
+	if c.Docker.Scope == "" {
+		c.Docker.Scope = DockerScopeDefault
+	}
+	if c.Docker.Image == "" {
+		c.Docker.Image = DockerImageDefault
+	}
 	for i := range c.Projects {
 		p := &c.Projects[i]
 		where := fmt.Sprintf("projects[%d]", i)
@@ -296,7 +308,7 @@ func (c *Config) evaluateSession() error {
 		if err := validateScripts(&p.Scripts, where+".scripts"); err != nil {
 			return err
 		}
-		if err := validateDocker(p.Docker, where+".docker"); err != nil {
+		if err := validateProjectDocker(p.Docker, c.Docker.Scope, where+".docker"); err != nil {
 			return err
 		}
 	}

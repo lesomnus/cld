@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/lesomnus/cld/cmd/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -13,7 +14,10 @@ import (
 // anything: the engine is reachable only from the devcontainer's private
 // network, so a client has to be told which container to drive.
 func TestDockerEngineAPI(t *testing.T) {
-	d, _ := newTestDaemon(t)
+	d, cfg := newTestDaemon(t)
+	// An engine is on by default, and this daemon has no docker client; the
+	// subtests here are the paths that answer before any docker call.
+	cfg.Docker = config.DockerConfig{Mode: config.DockerModeOff}
 
 	e := &entry{id: "idA", mbox: new_mailbox()}
 	e.item = Item{ID: "idA", Name: "alpha", LocalFolder: "/work/api"}
@@ -38,11 +42,11 @@ func TestDockerEngineAPI(t *testing.T) {
 		require.Equal(t, http.StatusNotFound, get("/docker/engine?name=nope").Code)
 	})
 
-	t.Run("says so when the project has no engine configured", func(t *testing.T) {
+	t.Run("says so when the project opted out", func(t *testing.T) {
 		// Rather than a bare 404, which reads as "cld is broken".
 		rr := get("/docker/engine?name=alpha")
 		require.Equal(t, http.StatusConflict, rr.Code)
-		require.Contains(t, rr.Body.String(), "mode: dind")
+		require.Contains(t, rr.Body.String(), "mode: off")
 	})
 
 	// The success path needs a real engine; TestDindLifecycle covers it.

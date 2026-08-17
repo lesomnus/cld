@@ -1,23 +1,25 @@
 # A Docker engine for the session
 
-cld can give a project's claude session a Docker engine of its own: a
-docker-in-docker container on a private network, with `DOCKER_HOST` pointed at
-it. Nothing in the project's `devcontainer.json` changes, and it works for a
-container VS Code started as well as one `cld up` did.
+cld gives claude sessions a Docker engine to work with: a docker-in-docker
+container on a private network, with `DOCKER_HOST` pointed at it. Nothing in the
+project's `devcontainer.json` changes, and it works for a container VS Code
+started as well as one `cld up` did.
 
-It is off by default.
+**One engine is shared by every project**, so there is one BuildKit cache that
+every build warms and one daemon's worth of memory, rather than a copy per
+project.
+
+It is **on by default**. To turn it off — globally, or for one project:
 
 ```yaml
 # cld.yaml
-projects:
-  - match: ~/work/infra/**
-    docker:
-      mode: dind
+docker:
+  mode: off
 ```
 
-## Read this before enabling it
+## Read this before leaving it on
 
-**Turning this on is a risk you are choosing to take.**
+**Running an engine is a risk you are choosing to take.**
 
 - Giving a session an engine gives it **root on that engine**. claude, and any
   code claude runs, can start containers, mount your workspace into them, and
@@ -26,27 +28,30 @@ projects:
   not a VM. Container escapes are a real class of bug, and cld adds no sandbox
   of its own around it.
 - The engine listens **without TLS** on the private network. Anything on that
-  network — which is the devcontainer, by design — has full control of it.
-- Your workspace is bind-mounted into the engine container, so control of the
-  engine means access to those files.
+  network — cld's own devcontainers, by design — has full control of it.
+- With the shared engine, **projects are not isolated from each other's
+  containers, images, or build cache.** Any session can inspect, stop, or delete
+  what another project is running there. Use `scope: project` where that
+  matters.
 
 This is meaningfully safer than mounting the host's Docker socket into the
 container, which hands over the host engine and with it the host. It is not
-"safe". That is why the default is `off` and why there is no way to turn it on
-for every project at once without saying so explicitly.
+"safe" — decide deliberately, and turn it off for machines or projects where
+that trade does not hold.
 
-## Enabling it
+## Configuring it
 
 ```yaml
 docker:
-  mode: dind          # off (default) | dind
+  mode: dind          # dind (default) | off
+  scope: shared       # shared (default) | project
   image: docker:dind  # optional
 ```
 
-Both fields work at the top level (every container cld manages) and inside a
-`projects` block (only matching workspaces). A project block overrides field by
-field, so it can change the image without restating the mode — or set
-`mode: off` to exclude one workspace from a global setting.
+Every field works at the top level (all managed containers) and inside a
+`projects` block (matching workspaces only). A project block overrides field by
+field, so it can change one thing without restating the others — including
+`mode: off` to exclude a single workspace.
 
 Pin the image (`docker:28-dind`) if you would rather decide when the engine
 version changes. `docker:dind-rootless` trades capability for a smaller blast
@@ -56,14 +61,34 @@ The `docker` CLI itself is not installed by cld — that is a devcontainer
 feature's job (`ghcr.io/devcontainers/features/docker-outside-of-docker`, whose
 socket mounting you simply do not use). cld only points it at an engine.
 
+## Shared or per-project
+
+| | `scope: shared` (default) | `scope: project` |
+| --- | --- | --- |
+| engines | one, for every project | one per project |
+| build cache | one, warmed by all of them | separate per project |
+| memory | one daemon | one daemon per project |
+| `docker build` | works | works |
+| `docker run -v <workspace>` | **does not resolve** | works |
+| projects isolated from each other | no | yes |
+
+The workspace bind is the whole difference, and it is not an oversight: mounts
+are fixed when a container is created, so a shared engine would have to be
+recreated — killing everything the other projects were running in it — each time
+a new project appeared. Builds do not need it, because a build context is
+streamed by the client rather than read off the engine's filesystem. Set
+`scope: project` for the projects whose tests bind the source tree
+(testcontainers, a compose file with `.:/app`).
+
 ## How it works
 
 ```
  ┌────────────────┐   private bridge network   ┌──────────────────────┐
- │ devcontainer   │───────────────────────────▶│ <project>-dind       │
- │ DOCKER_HOST=   │      tcp://…:2375          │ (privileged engine)  │
- │  tcp://…-dind  │                            │ /var/lib/docker → vol│
- └────────────────┘                            └──────────────────────┘
+ │ devcontainer A │──┐                      ┌─▶│ cld-dind             │
+ └────────────────┘  │   tcp://cld-dind:2375│  │ (privileged engine)  │
+ ┌────────────────┐  ├──────────────────────┘  │ /var/lib/docker → vol│
+ │ devcontainer B │──┘                         └──────────────────────┘
+ └────────────────┘
 ```
 
 cld cannot add a mount to a container that is already running — mounts are
@@ -72,9 +97,9 @@ That is the whole reason this works for containers cld did not create.
 
 During provisioning, before the session starts, cld:
 
-1. creates the project's network if it does not exist,
+1. creates the engine's network if it does not exist,
 2. creates and starts the engine container if it is not there (replacing one
-   whose image or workspace no longer matches),
+   whose spec no longer matches),
 3. attaches the devcontainer to the network,
 4. waits for the engine to answer, then
 5. adds `DOCKER_HOST` to the session environment.
@@ -83,7 +108,9 @@ Every step is best-effort. If the engine cannot be brought up, the session comes
 up **without** `DOCKER_HOST` rather than pointed at an engine that is not there
 — check `cld setting env <name>` and the daemon log.
 
-The first use on a host pulls the engine image, which takes a while.
+The first use on a host pulls the engine image, which takes a while — that is
+the one visible cost of the default, and it happens once per host, not per
+project.
 
 ## `DOCKER_HOST` is a default, not a promise
 
@@ -93,9 +120,8 @@ so this still wins:
 ```yaml
 projects:
   - match: ~/work/infra/**
-    docker: {mode: dind}
     env:
-      DOCKER_HOST: tcp://build01.internal:2376   # use the real engine instead
+      DOCKER_HOST: tcp://build01.internal:2376   # use a real engine instead
 ```
 
 `cld setting env <name>` shows which one took, and where it came from — `cld
@@ -124,12 +150,17 @@ Point at a different file with `docker.compose` — per project, if you like:
 ```yaml
 projects:
   - match: ~/work/infra/**
-    docker: {mode: dind, compose: infra.dind.yaml}
+    docker: {scope: project, compose: infra.dind.yaml}
 ```
 
 A relative name resolves against the config directory. A file named explicitly
 must exist (a typo is an error, not a silently skipped override); the default
 `cld.dind.yaml` is used only if it is there.
+
+An override on the **shared** engine applies to it for everyone — the first
+project to bring it up decides, and a project that resolves a different override
+would rebuild the engine out from under the others. Scope an override to one
+project only together with `scope: project`.
 
 **It is compose-shaped, not compose.** cld builds the engine through the Docker
 API and runs no compose CLI, so the supported keys are the ones that map onto a
@@ -189,12 +220,15 @@ at this engine through `DOCKER_HOST`.
 ## Volume paths: the thing that surprises everyone
 
 A path in `docker run -v` is resolved by the **engine**, not by the container
-that typed the command. Inside a docker-in-docker setup that means paths refer
-to the engine container's filesystem, not the devcontainer's — so a naive setup
-gives you an empty directory where you expected your source.
+that typed the command. Inside a docker-in-docker setup that means paths name
+the engine container's filesystem, not the devcontainer's — so a bind of your
+source tree gives you an empty directory where you expected your files.
 
-cld avoids this by bind-mounting your host workspace into the engine at **the
-same path the devcontainer uses**. So this works as written:
+Builds are unaffected: `docker build .` streams the context from the client, so
+it reads the devcontainer's files and works on any engine.
+
+With `scope: project`, cld binds your host workspace into the engine at **the
+same path the devcontainer uses**, so this works as written:
 
 ```sh
 $ pwd
@@ -202,37 +236,41 @@ $ pwd
 $ docker run --rm -v /workspace:/app alpine ls /app   # your files
 ```
 
-Only the workspace is shared this way. Any other host path you bind will resolve
-inside the engine container and almost certainly not be what you meant.
+With the shared engine it cannot, and there is no way around it short of an
+engine per project. If a project's tests bind the source tree, give it
+`scope: project`.
 
 ## Resources and cleanup
 
-Everything is derived from the project key, and labelled `cld.dind=<key>`:
+Names are derived from a key — `cld` for the shared engine, the project's own
+key otherwise — and everything is labelled `cld.dind=<key>`:
 
-| Resource | Name | `cld down` / container removed | `cld purge` |
-| --- | --- | --- | --- |
-| engine container | `<key>-dind` | removed | removed |
-| network | `<key>-dind-net` | removed | removed |
-| image cache | `<key>-dind-data` (volume) | **kept** | removed |
+| Resource | Shared | Per project |
+| --- | --- | --- |
+| engine container | `cld-dind` | `<key>-dind` |
+| network | `cld-dind-net` | `<key>-dind-net` |
+| image + build cache | `cld-dind-data` | `<key>-dind-data` |
 
-The image cache is kept on a plain teardown so the next `cld up` does not re-pull
-everything; `cld purge` deletes it along with the rest of the project's state.
+| Event | Shared engine | Project engine |
+| --- | --- | --- |
+| `cld down <name>` / `cld purge <name>` / `docker rm` | **kept** (others use it) | removed |
+| `cld down --all` | removed, cache kept | removed, cache kept |
+| `cld purge --all` | removed with its cache | removed with its cache |
 
-A devcontainer removed outside cld (`docker rm`) also takes its engine with it —
-the daemon sees the destroy event and cleans up. The engine carries no
-devcontainer labels, so `cld ls` never shows it and cld never tries to provision
-it as a devcontainer.
+A cache is kept on a plain teardown so the next `cld up` does not re-pull and
+re-build everything; a purge deletes it.
 
-One engine per project. Two projects never share an engine, an image cache, or a
-network.
+The engine carries no devcontainer labels, so `cld ls` never shows it and cld
+never tries to provision it as a devcontainer.
 
 ## Limits
 
 - **No filtering of what the session does with the engine.** The devcontainer
   talks to it directly; cld is not in that path and cannot refuse a privileged
   `docker run`.
-- **No shared engine across projects.** Isolation is the point; the cost is a
-  separate image cache per project.
+- **The shared engine gives projects no isolation from each other**, and a
+  per-project engine gives them no shared cache. There is no arrangement that
+  provides both.
 - **The engine is not reachable from your host**, only from the devcontainer on
   its private network — `cld docker` exists because of this. Publish it with
   `ports:` in the override if you really want it exposed, knowing it has no TLS

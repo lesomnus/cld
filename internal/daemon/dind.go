@@ -47,6 +47,20 @@ const dindSpecLabel = "cld.dind.spec"
 // failing provisioning.
 const dindReadyTimeout = 30 * time.Second
 
+// dindSharedKey names the engine every project shares by default. A project key
+// is always "cld-<something>" (see backup_key), so a bare "cld" can never
+// collide with one — not even for a project actually called cld.
+const dindSharedKey = "cld"
+
+// dind_key is the key naming the engine, network and cache a container uses:
+// the shared one, or one of its own when the project asked for that.
+func (d *Daemon) dind_key(e *entry, cfg config.DockerConfig) string {
+	if cfg.Shared() {
+		return dindSharedKey
+	}
+	return d.backup_key(e)
+}
+
 func dind_container_name(key string) string { return key + "-dind" }
 func dind_network_name(key string) string   { return key + "-dind-net" }
 func dind_volume_name(key string) string    { return key + "-dind-data" }
@@ -74,8 +88,8 @@ func (d *Daemon) ensure_dind(ctx context.Context, e *entry, id string) {
 		return
 	}
 
-	key := d.backup_key(e)
-	log := d.log.With(slog.String("name", e.item.Name), slog.String("key", key))
+	key := d.dind_key(e, cfg)
+	log := d.log.With(slog.String("name", e.item.Name), slog.String("engine", key))
 
 	net, err := d.ensure_dind_network(ctx, key)
 	if err != nil {
@@ -189,15 +203,16 @@ func dind_create_options(e *entry, key, net string, cfg config.DockerConfig, ove
 			Image:  cfg.Image,
 			Labels: map[string]string{dindLabel: key},
 			// An empty DOCKER_TLS_CERTDIR is how the official image is told to
-			// serve the plain port instead of generating TLS material. The
-			// network holds only this engine and its devcontainer.
+			// serve the plain port instead of generating TLS material. Nothing
+			// but cld's own devcontainers is ever on the network.
 			Env: []string{"DOCKER_TLS_CERTDIR="},
 		},
 		HostConfig: &container.HostConfig{
 			// docker-in-docker needs it. This is the sharpest edge of the
-			// feature and the reason it is opt-in.
+			// feature: the session is root on a privileged container that
+			// shares the host kernel.
 			Privileged: true,
-			Binds:      dind_binds(e, key),
+			Binds:      dind_binds(e, key, cfg),
 		},
 		NetworkingConfig: &network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{net: {}},
@@ -347,15 +362,25 @@ func sorted_keys(m map[string]string) []string {
 	return out
 }
 
-// dind_binds is the engine's storage plus the workspace.
+// dind_binds is the engine's storage, plus the workspace for an engine that
+// belongs to a single project.
 //
-// The workspace bind is what makes `docker run -v $(pwd):/app` behave. A path
-// in a `docker run` is resolved by the ENGINE, so inside a dind it means a path
-// in the engine container, not in the devcontainer — without this the mount
-// would silently be an empty directory. Binding the host workspace at the same
-// path the devcontainer sees makes the two agree.
-func dind_binds(e *entry, key string) []string {
+// The workspace bind is what makes `docker run -v $(pwd):/app` behave: a path
+// in a `docker run` is resolved by the ENGINE, so inside a dind it names a path
+// in the engine container, not in the devcontainer, and without the bind the
+// mount would silently be an empty directory. Binding the host workspace at the
+// path the devcontainer uses makes the two agree.
+//
+// A SHARED engine cannot have it. Mounts are fixed when a container is created,
+// so every new project would mean recreating the engine — killing whatever the
+// other projects were running in it. Builds do not need it (a build context is
+// streamed by the client), which is what makes sharing worth the trade; a
+// project that needs the bind sets `docker: {scope: project}`.
+func dind_binds(e *entry, key string, cfg config.DockerConfig) []string {
 	binds := []string{dind_volume_name(key) + ":/var/lib/docker"}
+	if cfg.Shared() {
+		return binds
+	}
 	if e.item.LocalFolder != "" && e.item.Workspace != "" {
 		binds = append(binds, e.item.LocalFolder+":"+e.item.Workspace)
 	}
@@ -461,6 +486,45 @@ func (d *Daemon) wait_dind(ctx context.Context, engine string) error {
 	}
 }
 
+// project_dind_key is the key of an engine that exists only for this project,
+// or "" when it uses the shared one (or none) — i.e. the key a teardown of this
+// project alone may remove.
+func (d *Daemon) project_dind_key(e *entry) string {
+	if e.item.LocalFolder == "" {
+		return "" // never resolved far enough to have an engine
+	}
+	cfg := d.cfg.DockerFor(e.item.LocalFolder)
+	if !cfg.Enabled() || cfg.Shared() {
+		return ""
+	}
+	return d.backup_key(e)
+}
+
+// remove_shared_dind drops the engine every project shares, with its network.
+// It is for the moments when there is nothing left to share it: the last
+// devcontainer going away (`cld down --all`), or cld itself being removed.
+// purge also deletes the accumulated image and build cache.
+func (d *Daemon) remove_shared_dind(ctx context.Context, purge bool) {
+	containers, networks := d.dind_targets(ctx, dindSharedKey)
+	for _, id := range containers {
+		if _, err := d.cli.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true, RemoveVolumes: purge}); err != nil {
+			d.log.Warn("dind: remove shared engine", slog.String("error", err.Error()))
+		}
+	}
+	for _, id := range networks {
+		d.remove_dind_network(ctx, id)
+	}
+	if purge {
+		name := dind_volume_name(dindSharedKey)
+		if _, err := d.cli.VolumeRemove(ctx, name, client.VolumeRemoveOptions{Force: true}); err != nil {
+			d.log.Warn("dind: remove shared cache", slog.String("error", err.Error()))
+		}
+	}
+	if len(containers) > 0 {
+		d.log.Info("shared dind removed", slog.Bool("purged", purge))
+	}
+}
+
 // dind_targets lists the engine container and network cld owns for a project,
 // so a teardown removes them alongside the devcontainer they belong to. The
 // image cache volume is not listed: it is mounted into the engine container, so
@@ -486,10 +550,11 @@ func (d *Daemon) dind_targets(ctx context.Context, key string) (containers []str
 // `docker rm`) would otherwise leave a privileged engine running for a project
 // that no longer exists. Best-effort — there may be nothing to remove.
 func (d *Daemon) remove_dind(ctx context.Context, e *entry) {
-	if e.item.LocalFolder == "" {
-		return // never resolved far enough to have an engine
+	key := d.project_dind_key(e)
+	if key == "" {
+		return // no engine of its own; the shared one outlives this project
 	}
-	containers, networks := d.dind_targets(ctx, d.backup_key(e))
+	containers, networks := d.dind_targets(ctx, key)
 	for _, id := range containers {
 		if _, err := d.cli.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true}); err != nil {
 			d.log.Warn("dind: remove engine",

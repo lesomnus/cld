@@ -64,13 +64,17 @@ func (d *Daemon) remove_devcontainer(ctx context.Context, e *entry, purge bool) 
 
 	containers, networks := d.down_targets(ctx, e.id)
 
-	// The engine cld runs for this project, if any, goes with it — a privileged
+	// An engine that belongs to this project alone goes with it — a privileged
 	// container has no business outliving the devcontainer it was for. Adding
 	// it to the removal set also gets the right volume behaviour for free: its
 	// image cache is a named volume, so a purge collects and deletes it while a
 	// plain down leaves it for the next `cld up`.
-	if e.item.LocalFolder != "" {
-		dind_ctrs, dind_nets := d.dind_targets(ctx, d.backup_key(e))
+	//
+	// The SHARED engine is deliberately left alone: other projects are using it,
+	// and its whole value is the cache it has accumulated for all of them. It is
+	// removed with the last of them (`cld down --all`) or with cld itself.
+	if key := d.project_dind_key(e); key != "" {
+		dind_ctrs, dind_nets := d.dind_targets(ctx, key)
 		containers = append(containers, dind_ctrs...)
 		networks = append(networks, dind_nets...)
 	}

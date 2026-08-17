@@ -469,36 +469,39 @@ mounts remain `devcontainer.json`'s job. Full reference:
 
 ### Docker for the session
 
-A project can also be given a Docker engine of its own — a docker-in-docker
-container on a private network, with `DOCKER_HOST` pointed at it — so claude can
-build and run containers without the host's Docker socket ever entering the
-devcontainer:
+Sessions get a Docker engine to work with — a docker-in-docker container on a
+private network, with `DOCKER_HOST` pointed at it — so claude can build and run
+containers without the host's Docker socket ever entering the devcontainer.
+**One engine is shared by every project**, so there is a single BuildKit cache
+that every build warms and one daemon's worth of memory instead of a copy per
+project.
+
+cld attaches each devcontainer to a private network with the engine — networks,
+unlike mounts, can be attached to a container that is already running, which is
+why this works for one VS Code started. Since the engine is deliberately
+unreachable from your host, `cld docker -- ps` / `cld docker -- run -it alpine
+sh` drives it for you, and a `cld.dind.yaml` next to your `cld.yaml` overrides
+the engine container (dockerd flags, extra volumes, capabilities, limits) in a
+compose-shaped file whose unknown keys are rejected rather than ignored.
+
+It is **on by default**:
 
 ```yaml
-projects:
-  - match: ~/work/infra/**
-    docker:
-      mode: dind
+docker:
+  mode: off             # no engine at all
+  scope: project        # or: an engine per project, which can bind the workspace
 ```
 
-A `cld.dind.yaml` next to your `cld.yaml` overrides the engine container —
-dockerd flags, extra volumes, capabilities, limits — in a compose-shaped file
-(a documented subset; unknown keys are rejected rather than ignored). And since
-the engine is deliberately unreachable from your host, `cld docker -- ps` /
-`cld docker -- run -it alpine sh` drives it for you.
+The one thing the shared engine cannot do is bind your workspace, so
+`docker run -v /workspace:/app` finds an empty directory there. (Builds are
+unaffected — a build context is streamed by the client.) Give such a project
+`scope: project` and its own engine binds the workspace at the same path.
 
-cld creates the engine, attaches the devcontainer to a private network with it
-(networks, unlike mounts, can be attached to a running container — which is why
-this works for a container VS Code started), and binds your workspace into the
-engine at the same path, so `docker run -v /workspace:/app` means what it looks
-like. The engine and its network are removed with the devcontainer; the image
-cache survives a `cld down` and is deleted by `cld purge`.
-
-**It is off by default, and enabling it is a risk you take on deliberately:** an
-engine is root on that engine, for claude and for anything claude runs, and the
-engine container is privileged and shares the host kernel. It is meaningfully
-safer than mounting the host Docker socket, not safe. Read
-[docs/session-docker.md](docs/session-docker.md) first.
+**Running an engine is a risk you take on deliberately:** an engine is root on
+that engine, for claude and for anything claude runs; the engine container is
+privileged and shares the host kernel; and projects sharing one are not isolated
+from each other's containers. It is meaningfully safer than mounting the host
+Docker socket, not safe. Read [docs/session-docker.md](docs/session-docker.md).
 
 See `plan.md` for the design and roadmap.
 

@@ -29,24 +29,83 @@ func TestDindNames(t *testing.T) {
 
 func TestDindBinds(t *testing.T) {
 	e := &entry{item: Item{LocalFolder: "/home/me/work/api", Workspace: "/workspace"}}
+	own := config.DockerConfig{Mode: config.DockerModeDind, Scope: config.DockerScopeProject}
+	shared := config.DockerConfig{Mode: config.DockerModeDind, Scope: config.DockerScopeShared}
 
-	// The workspace is bound at the path the devcontainer uses, so that
-	// `docker run -v $(pwd):/app` — resolved by the engine, not by the
-	// devcontainer — refers to the same files.
-	require.Equal(t, []string{
-		"cld-api-dind-data:/var/lib/docker",
-		"/home/me/work/api:/workspace",
-	}, dind_binds(e, "cld-api"))
+	t.Run("an engine of its own gets the workspace", func(t *testing.T) {
+		// Bound at the path the devcontainer uses, so that `docker run -v
+		// $(pwd):/app` — resolved by the engine, not by the devcontainer —
+		// refers to the same files.
+		require.Equal(t, []string{
+			"cld-api-dind-data:/var/lib/docker",
+			"/home/me/work/api:/workspace",
+		}, dind_binds(e, "cld-api", own))
+	})
+
+	t.Run("the shared engine gets no workspace", func(t *testing.T) {
+		// It cannot: mounts are fixed at creation, so every new project would
+		// mean recreating the engine and killing what the others are running.
+		require.Equal(t, []string{"cld-dind-data:/var/lib/docker"},
+			dind_binds(e, "cld", shared))
+	})
 
 	t.Run("skips the workspace when it is not resolved", func(t *testing.T) {
 		require.Equal(t, []string{"cld-api-dind-data:/var/lib/docker"},
-			dind_binds(&entry{}, "cld-api"))
+			dind_binds(&entry{}, "cld-api", own))
 	})
+}
+
+func TestDindKey(t *testing.T) {
+	d, cfg := newTestDaemon(t)
+	e := &entry{item: Item{LocalFolder: "/work/api"}}
+
+	t.Run("shared by default", func(t *testing.T) {
+		key := d.dind_key(e, cfg.DockerFor(e.item.LocalFolder))
+		require.Equal(t, dindSharedKey, key)
+		require.Equal(t, "cld-dind", dind_container_name(key))
+	})
+
+	t.Run("a project key never collides with the shared one", func(t *testing.T) {
+		// backup_key always prefixes "cld-", including for a project called cld.
+		e := &entry{dev_name: "cld", item: Item{LocalFolder: "/work/cld"}}
+		require.NotEqual(t, dindSharedKey, d.backup_key(e))
+	})
+
+	t.Run("its own when the project asks", func(t *testing.T) {
+		cfg.Projects = []config.ProjectConfig{{
+			Match:  config.StringList{"/work/**"},
+			Docker: config.DockerConfig{Scope: config.DockerScopeProject},
+		}}
+		key := d.dind_key(e, cfg.DockerFor(e.item.LocalFolder))
+		require.Equal(t, d.backup_key(e), key)
+	})
+}
+
+// A single project's teardown must never take the shared engine with it: the
+// others are still using it, and its value is the cache they all filled.
+func TestProjectDindKey(t *testing.T) {
+	d, cfg := newTestDaemon(t)
+	e := &entry{item: Item{LocalFolder: "/work/api"}}
+
+	require.Empty(t, d.project_dind_key(e), "shared engine: nothing for this project to remove")
+
+	cfg.Docker = config.DockerConfig{Scope: config.DockerScopeProject}
+	require.Equal(t, d.backup_key(e), d.project_dind_key(e))
+
+	cfg.Docker = config.DockerConfig{Mode: config.DockerModeOff}
+	require.Empty(t, d.project_dind_key(e))
+
+	cfg.Docker = config.DockerConfig{Scope: config.DockerScopeProject}
+	require.Empty(t, d.project_dind_key(&entry{}), "an unresolved container has no engine")
 }
 
 func TestDindSpec(t *testing.T) {
 	e := &entry{item: Item{LocalFolder: "/host/api", Workspace: "/workspace"}}
-	cfg := config.DockerConfig{Mode: config.DockerModeDind, Image: "docker:dind"}
+	cfg := config.DockerConfig{
+		Mode:  config.DockerModeDind,
+		Scope: config.DockerScopeProject,
+		Image: "docker:dind",
+	}
 	hash := func(c config.DockerConfig, over *config.DindService) string {
 		return dind_spec_hash(dind_create_options(e, "cld-api", "net", c, over))
 	}
@@ -63,10 +122,21 @@ func TestDindSpec(t *testing.T) {
 		require.NotEqual(t, base, hash(other, nil))
 	})
 
-	t.Run("changes with the workspace", func(t *testing.T) {
+	t.Run("changes with the workspace of an engine that binds it", func(t *testing.T) {
 		moved := &entry{item: Item{LocalFolder: "/host/api", Workspace: "/elsewhere"}}
 		require.NotEqual(t, base,
 			dind_spec_hash(dind_create_options(moved, "cld-api", "net", cfg, nil)))
+	})
+
+	t.Run("the shared engine is the same whichever project asks", func(t *testing.T) {
+		// It must be: every project resolves the same spec, so none of them
+		// rebuilds the engine the others are using.
+		shared := config.DockerConfig{Mode: config.DockerModeDind, Image: "docker:dind"}
+		a := dind_spec_hash(dind_create_options(e, dindSharedKey, "net", shared, nil))
+		b := dind_spec_hash(dind_create_options(
+			&entry{item: Item{LocalFolder: "/host/other", Workspace: "/w2"}},
+			dindSharedKey, "net", shared, nil))
+		require.Equal(t, a, b)
 	})
 
 	t.Run("changes with any override", func(t *testing.T) {
@@ -99,7 +169,12 @@ func TestDindSpec(t *testing.T) {
 
 func TestDindOverrideApplies(t *testing.T) {
 	e := &entry{item: Item{LocalFolder: "/host/api", Workspace: "/workspace"}}
-	cfg := config.DockerConfig{Mode: config.DockerModeDind, Image: "docker:dind"}
+	// Project scope, so the workspace bind is in the base the override adds to.
+	cfg := config.DockerConfig{
+		Mode:  config.DockerModeDind,
+		Scope: config.DockerScopeProject,
+		Image: "docker:dind",
+	}
 	yes := true
 	no := false
 
@@ -224,16 +299,26 @@ func TestDindEnv(t *testing.T) {
 	})
 }
 
-// TestDindDisabled pins that the feature costs nothing when it is off: no
-// docker calls at all, which a nil client proves.
+// TestDindDisabled pins that opting out costs nothing: no docker calls at all,
+// which a nil client proves.
 func TestDindDisabled(t *testing.T) {
-	d, _ := newTestDaemon(t)
+	d, cfg := newTestDaemon(t)
 	require.Nil(t, d.cli)
+	cfg.Docker = config.DockerConfig{Mode: config.DockerModeOff}
 
 	e := provision_entry("ctr")
 	e.docker_host = "stale"
 	d.ensure_dind(t.Context(), e, "ctr")
 	require.Empty(t, e.docker_host, "a disabled engine must also clear a stale endpoint")
+}
+
+// An engine is on by default, so a project that says nothing gets one. This is
+// the assertion that fails first if the default is ever flipped back.
+func TestDindEnabledByDefault(t *testing.T) {
+	d, _ := newTestDaemon(t)
+	got := d.cfg.DockerFor("/work/api")
+	require.True(t, got.Enabled())
+	require.True(t, got.Shared())
 }
 
 // TestDindLifecycle drives the whole thing against a real engine: the private
@@ -248,9 +333,11 @@ func TestDindLifecycle(t *testing.T) {
 	id := run_container_labeled(t, cli, "", map[string]string{})
 
 	// File-backed, so the override beside cld.yaml is exercised end to end.
+	// Project scope, so this test owns the engine it creates instead of racing
+	// another test over the shared one.
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "cld.yaml"),
-		[]byte("docker: {mode: dind}\n"), 0o644))
+		[]byte("docker: {mode: dind, scope: project}\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, config.DindFileName), []byte(`
 services:
   dind:
@@ -398,5 +485,102 @@ services:
 			}
 		}
 		require.True(t, found, "the image cache volume must survive a teardown")
+	})
+}
+
+// TestDindShared is the default arrangement: one engine, every project on it,
+// one build cache. What has to hold is that two projects land on the SAME
+// engine and that neither can take it away from the other.
+func TestDindShared(t *testing.T) {
+	cli := require_docker(t)
+	if testing.Short() {
+		t.Skip("integration test; -short given")
+	}
+
+	cfg := &config.Config{CacheDir: t.TempDir(), DataDir: t.TempDir()}
+	require.NoError(t, cfg.Evaluate())
+	require.True(t, cfg.DockerFor("/work/a").Shared(), "shared is the default")
+
+	d, err := New(cfg, cli, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
+	defer cancel()
+	t.Cleanup(func() {
+		c, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		d.remove_shared_dind(c, true)
+	})
+
+	// Two devcontainers, two different projects.
+	id_a := run_container_labeled(t, cli, "", map[string]string{})
+	id_b := run_container_labeled(t, cli, "", map[string]string{})
+
+	a := provision_entry(id_a)
+	a.item.LocalFolder, a.item.Name = "/work/a", "alpha"
+	b := provision_entry(id_b)
+	b.item.LocalFolder, b.item.Name = "/work/b", "bravo"
+
+	d.ensure_dind(ctx, a, id_a)
+	d.ensure_dind(ctx, b, id_b)
+
+	t.Run("both projects point at the one engine", func(t *testing.T) {
+		want := dind_endpoint(dindSharedKey)
+		require.Equal(t, want, a.docker_host)
+		require.Equal(t, want, b.docker_host, "a second project must reuse, not rebuild")
+
+		ctrs, _ := d.dind_targets(ctx, dindSharedKey)
+		require.Len(t, ctrs, 1, "one engine, not one per project")
+	})
+
+	t.Run("both devcontainers can reach it", func(t *testing.T) {
+		for _, id := range []string{id_a, id_b} {
+			out, code := in_container(t, d, id,
+				"wget -qO- http://"+dind_container_name(dindSharedKey)+":2375/_ping")
+			require.Equal(t, 0, code)
+			require.Equal(t, "OK", strings.TrimSpace(out))
+		}
+	})
+
+	t.Run("the shared engine has no workspace bind", func(t *testing.T) {
+		// It cannot have one: adding a project would mean recreating the engine
+		// and killing whatever the others were building.
+		engine, err := d.find_dind(ctx, dindSharedKey)
+		require.NoError(t, err)
+		insp, err := cli.ContainerInspect(ctx, engine, client.ContainerInspectOptions{})
+		require.NoError(t, err)
+		require.Equal(t, []string{dind_volume_name(dindSharedKey) + ":/var/lib/docker"},
+			insp.Container.HostConfig.Binds)
+	})
+
+	t.Run("one project's teardown leaves it for the others", func(t *testing.T) {
+		d.remove_dind(ctx, a)
+
+		ctrs, _ := d.dind_targets(ctx, dindSharedKey)
+		require.Len(t, ctrs, 1, "bravo is still using it")
+
+		out, code := in_container(t, d, id_b,
+			"wget -qO- http://"+dind_container_name(dindSharedKey)+":2375/_ping")
+		require.Equal(t, 0, code)
+		require.Equal(t, "OK", strings.TrimSpace(out))
+	})
+
+	t.Run("removing the last of them takes the engine", func(t *testing.T) {
+		d.remove_shared_dind(ctx, false)
+
+		ctrs, nets := d.dind_targets(ctx, dindSharedKey)
+		require.Empty(t, ctrs)
+		require.Empty(t, nets)
+
+		// Not a purge, so the cache the projects filled is still there.
+		res, err := cli.VolumeList(ctx, client.VolumeListOptions{})
+		require.NoError(t, err)
+		found := false
+		for _, v := range res.Items {
+			if v.Name == dind_volume_name(dindSharedKey) {
+				found = true
+			}
+		}
+		require.True(t, found, "a down must not throw away the build cache")
 	})
 }

@@ -64,11 +64,13 @@ services:
 	})
 
 	t.Run("a project block can point at its own file", func(t *testing.T) {
+		// Only with an engine of its own: an override on the shared engine
+		// belongs to every project, so it is set at the top level.
 		c := withOverride(t, `
 docker: {mode: dind}
 projects:
   - match: /work/infra/**
-    docker: {compose: infra.yaml}
+    docker: {scope: project, compose: infra.yaml}
 `, "infra.yaml", "services:\n  dind:\n    cpus: 8\n")
 
 		got, err := c.LoadDindOverride("/work/infra/api")
