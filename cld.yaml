@@ -51,6 +51,16 @@
 #  setup: sudo apt-get update && sudo apt-get install -y ripgrep
 #  start: echo "started ${CLD_NAME}"
 
+# Give a session a Docker engine of its own: a docker-in-docker container on a
+# private network, with DOCKER_HOST pointed at it. Off by default, and read
+# docs/session-docker.md before turning it on — an engine is root on that
+# engine, the engine container is privileged and shares the host kernel, and
+# enabling it is a risk you are choosing to take. Usually scoped to the projects
+# that need it (see projects below) rather than set globally.
+#docker:
+#  mode: dind          # off (default) | dind
+#  image: docker:dind  # pin it (docker:28-dind), or soften it (docker:dind-rootless)
+
 # The same three, scoped to the workspaces a glob matches. "match" is matched
 # against the host-side workspace path, exactly like "ignore" above. EVERY
 # matching block applies, in file order, so a broad one and a narrow one
@@ -72,6 +82,8 @@
 #        user: root
 #        timeout: 10m
 #        on_error: fail
+#    docker:
+#      mode: dind      # an engine for this project only
 
 auth:
   # By default each container logs in for itself: run `claude` inside it and

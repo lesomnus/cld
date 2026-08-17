@@ -447,6 +447,33 @@ scripts), not to the container as a whole: container-wide environment, ports and
 mounts remain `devcontainer.json`'s job. Full reference:
 [docs/session-env.md](docs/session-env.md).
 
+### Docker for the session
+
+A project can also be given a Docker engine of its own — a docker-in-docker
+container on a private network, with `DOCKER_HOST` pointed at it — so claude can
+build and run containers without the host's Docker socket ever entering the
+devcontainer:
+
+```yaml
+projects:
+  - match: ~/work/infra/**
+    docker:
+      mode: dind
+```
+
+cld creates the engine, attaches the devcontainer to a private network with it
+(networks, unlike mounts, can be attached to a running container — which is why
+this works for a container VS Code started), and binds your workspace into the
+engine at the same path, so `docker run -v /workspace:/app` means what it looks
+like. The engine and its network are removed with the devcontainer; the image
+cache survives a `cld down` and is deleted by `cld purge`.
+
+**It is off by default, and enabling it is a risk you take on deliberately:** an
+engine is root on that engine, for claude and for anything claude runs, and the
+engine container is privileged and shares the host kernel. It is meaningfully
+safer than mounting the host Docker socket, not safe. Read
+[docs/session-docker.md](docs/session-docker.md) first.
+
 See `plan.md` for the design and roadmap.
 
 ## Development
