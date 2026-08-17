@@ -10,6 +10,7 @@ import (
 
 	"github.com/goccy/go-yaml"
 	"github.com/lesomnus/cld/cmd/config"
+	"github.com/lesomnus/cld/internal/tui"
 	"github.com/lesomnus/xli"
 	"github.com/lesomnus/xli/arg"
 	"github.com/lesomnus/xli/flg"
@@ -89,10 +90,44 @@ var dindConfigTemplate = []byte(
 		"    # command: [\"--insecure-registry\", \"registry.internal:5000\"]\n" +
 		"    # mem_limit: 8g\n")
 
+// configVisibilityNote warns when the file about to be edited is not the one
+// the daemon reads, which is a quiet failure the user only discovers when a
+// setting never takes. There are two ways to land there and both are easy: the
+// daemon runs on the host, so nothing inside a devcontainer is its config; and
+// a cld.yaml in the working directory wins over the user's, so editing inside
+// any checkout that has one writes there.
+//
+// Returns "" when the target is the daemon's own config directory.
+func configVisibilityNote(path, daemon_dir string, in_devcontainer bool) string {
+	if in_devcontainer {
+		return "you are inside a devcontainer, so this file is client-only; the daemon " +
+			"reads ~/" + config.UserConfigDirName + "/ on the HOST — edit it there"
+	}
+	if daemon_dir == "" || filepath.Dir(path) == daemon_dir {
+		return ""
+	}
+	return "the daemon reads " + daemon_dir + "/; this file is client-only " +
+		"unless the daemon was pointed at it"
+}
+
+// warnConfigVisibility prints that note, if there is one, before the editor
+// opens — so it is seen whether or not the edit is saved.
+func warnConfigVisibility(cmd *xli.Command, path string) {
+	// The daemon's own container has CLD_HOST_HOME set, and there the user
+	// config dir does resolve to the mounted host home; a managed devcontainer
+	// is the case that cannot see the daemon's filesystem at all.
+	in_devcontainer := insideContainer() && os.Getenv(config.HostHomeEnv) == ""
+	if note := configVisibilityNote(path, config.UserConfigDir(), in_devcontainer); note != "" {
+		fmt.Fprintf(cmd.ErrWriter, "%s: note: %s\n", tui.Tag(), note)
+	}
+}
+
 // editDindFile opens the engine override, rejecting a save cld could not act
 // on — an unknown key or a relative volume source is caught here rather than
 // silently failing to apply at the next provisioning.
 func editDindFile(ctx context.Context, cmd *xli.Command, path string) error {
+	warnConfigVisibility(cmd, path)
+
 	orig, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		orig = dindConfigTemplate
@@ -144,6 +179,8 @@ var cldConfigTemplate = []byte(
 // editConfigFile opens cld's own config in the editor, seeding a template when
 // it does not exist yet and rejecting a save that does not parse as YAML.
 func editConfigFile(ctx context.Context, cmd *xli.Command, path string) error {
+	warnConfigVisibility(cmd, path)
+
 	orig, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		orig = cldConfigTemplate
