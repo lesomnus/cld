@@ -13,7 +13,7 @@ import (
 func NewCmdUninstall() *xli.Command {
 	return &xli.Command{
 		Name:  "uninstall",
-		Brief: "stop and remove the cld daemon container",
+		Brief: "stop and remove the cld daemon container and the engines it ran",
 		Handler: xli.OnRun(func(ctx context.Context, cmd *xli.Command, next xli.Next) error {
 			cli, err := client.New(client.FromEnv)
 			if err != nil {
@@ -30,7 +30,18 @@ func NewCmdUninstall() *xli.Command {
 			} else {
 				fmt.Fprintln(cmd.ErrWriter, "cld: no daemon container found")
 			}
-			return nil
+
+			// The engines cld ran for sessions go too: they are privileged
+			// containers whose only purpose was to serve those sessions. Their
+			// build caches are named volumes and are kept, so a later install
+			// starts warm. Reported separately, and a failure here does not
+			// undo the daemon removal above.
+			engines, err := installer.RemoveEngines(ctx, cli)
+			if engines > 0 {
+				fmt.Fprintf(cmd.ErrWriter,
+					"cld: %d docker engine(s) removed (their image and build caches are kept)\n", engines)
+			}
+			return err
 		}),
 	}
 }

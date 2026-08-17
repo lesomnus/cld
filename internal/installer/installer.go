@@ -7,6 +7,7 @@ package installer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 
@@ -142,6 +143,49 @@ func Uninstall(ctx context.Context, cli *client.Client) (removed bool, err error
 		return false, err
 	}
 	return true, remove(ctx, cli, ids)
+}
+
+// RemoveEngines removes the Docker engines cld ran for sessions, and their
+// networks. It is part of uninstalling: those are privileged containers that
+// exist only to serve cld's sessions, so leaving them behind would be leaving
+// the sharpest thing cld starts running with nothing to serve.
+//
+// Their image and build caches are named volumes and are kept, like the
+// conversation backups — a later `cld install` finds them warm.
+//
+// Returns how many engines were removed.
+func RemoveEngines(ctx context.Context, cli *client.Client) (int, error) {
+	sel := client.Filters{"label": {config.DockerLabel: true}}
+
+	res, err := cli.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: sel})
+	if err != nil {
+		return 0, err
+	}
+	var errs []error
+	for _, c := range res.Items {
+		if _, err := cli.ContainerRemove(ctx, c.ID, client.ContainerRemoveOptions{Force: true}); err != nil {
+			errs = append(errs, fmt.Errorf("remove engine %s: %w", c.ID[:12], err))
+		}
+	}
+
+	nets, err := cli.NetworkList(ctx, client.NetworkListOptions{Filters: sel})
+	if err != nil {
+		return len(res.Items), errors.Join(append(errs, err)...)
+	}
+	for _, n := range nets.Items {
+		// Devcontainers cld attached are usually still running and still on the
+		// network, and Docker refuses to remove one that has endpoints. Only
+		// cld's own networks are touched here, so detaching is safe.
+		if insp, err := cli.NetworkInspect(ctx, n.ID, client.NetworkInspectOptions{}); err == nil {
+			for ctr := range insp.Network.Containers {
+				cli.NetworkDisconnect(ctx, n.ID, client.NetworkDisconnectOptions{Container: ctr, Force: true})
+			}
+		}
+		if _, err := cli.NetworkRemove(ctx, n.ID, client.NetworkRemoveOptions{}); err != nil {
+			errs = append(errs, fmt.Errorf("remove network %s: %w", n.Name, err))
+		}
+	}
+	return len(res.Items), errors.Join(errs...)
 }
 
 // find returns the ids of daemon containers (by role label), running or not.

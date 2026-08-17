@@ -231,9 +231,11 @@ day in `cld up`/`cld it`/`cld ls`/`cld down`.
   `~/.dotfiles`), as your user. This is the normal way to get cld running; do it
   once per host. `--recreate` replaces an existing daemon (e.g. to upgrade the
   image); `--image` overrides the image. Requires a local Docker engine.
-- **`cld uninstall`** — stop and remove the daemon container. Conversation
-  backups under the data dir are kept, so a later `cld install` + `cld up`
-  restores history.
+- **`cld uninstall`** — stop and remove the daemon container, and with it any
+  Docker engine it ran for sessions (those are privileged containers with
+  nothing left to serve). Conversation backups under the data dir are kept, as
+  are the engines' image and build caches, so a later `cld install` + `cld up`
+  restores history and starts warm.
 - **`cld serve`** — the daemon itself (what the container runs). It must run
   inside a container — it reaches Docker and reads your home through mounts that
   don't exist on the bare host — so it refuses to start otherwise. Use `cld

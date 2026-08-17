@@ -31,6 +31,12 @@ const DockerModeDefault = DockerModeDind
 // rather control when the engine changes under you.
 const DockerImageDefault = "docker:dind"
 
+// DockerLabel marks every container and network cld creates for an engine,
+// valued with the key naming that engine. It lives here rather than with the
+// daemon so `cld uninstall` can find them too: an engine outliving cld would
+// leave a privileged container running for nothing.
+const DockerLabel = "cld.dind"
+
 // DockerEnginePort is the port the engine listens on, without TLS, on the
 // private network cld creates for it. Plaintext is acceptable only because
 // nothing but cld's own devcontainers is on that network, and any of them can

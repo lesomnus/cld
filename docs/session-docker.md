@@ -319,6 +319,7 @@ key otherwise — and everything is labelled `cld.dind=<key>`:
 | `cld down <name>` / `cld purge <name>` / `docker rm` | **kept** (others use it) | removed |
 | `cld down --all` | removed, cache kept | removed, cache kept |
 | `cld purge --all` | removed with its cache | removed with its cache |
+| `cld uninstall` | removed, cache kept | removed, cache kept |
 
 A cache is kept on a plain teardown so the next `cld up` does not re-pull and
 re-build everything; a purge deletes it.

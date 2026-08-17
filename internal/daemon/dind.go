@@ -35,10 +35,11 @@ import (
 // Enabling it hands the session root on a privileged container that shares the
 // host kernel. That is the user's decision to make; see docs/session-docker.md.
 
-// dindLabel marks the resources cld owns for a project, valued with the
-// project key. The engine carries no devcontainer.local_folder label, so the
-// daemon never mistakes it for a devcontainer to provision.
-const dindLabel = "cld.dind"
+// dindLabel marks the resources cld owns for an engine, valued with its key.
+// The engine carries no devcontainer.local_folder label, so the daemon never
+// mistakes it for a devcontainer to provision. Shared with the installer, which
+// removes engines when cld itself is removed.
+const dindLabel = config.DockerLabel
 
 // dindSpecLabel records the hash of the spec an engine was created from, so a
 // changed image, workspace or override is noticed on the next reconcile.
