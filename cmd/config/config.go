@@ -54,6 +54,10 @@ type Config struct {
 	Scripts  ScriptSet       `yaml:"scripts"`
 	Projects []ProjectConfig `yaml:"projects"`
 
+	// Docker declares whether a session gets a Docker engine of its own. Off
+	// by default; see docker.go and docs/session-docker.md.
+	Docker DockerConfig `yaml:"docker"`
+
 	Auth      AuthConfig      `yaml:"auth"`
 	Release   ReleaseConfig   `yaml:"release"`
 	Gh        GhConfig        `yaml:"gh"`

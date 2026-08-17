@@ -192,10 +192,11 @@ type ProjectConfig struct {
 	// Match holds globs matched against the host-side workspace path, with the
 	// same semantics as the top-level `ignore` list: "**" crosses path
 	// separators and a leading "~/" expands to the home directory.
-	Match   StringList `yaml:"match"`
-	Env     EnvMap     `yaml:"env"`
-	Files   []FileSpec `yaml:"files"`
-	Scripts ScriptSet  `yaml:"scripts"`
+	Match   StringList   `yaml:"match"`
+	Env     EnvMap       `yaml:"env"`
+	Files   []FileSpec   `yaml:"files"`
+	Scripts ScriptSet    `yaml:"scripts"`
+	Docker  DockerConfig `yaml:"docker"`
 }
 
 // Matches reports whether this block applies to a host-side workspace path.
@@ -272,6 +273,9 @@ func (c *Config) evaluateSession() error {
 	if err := validateScripts(&c.Scripts, "scripts"); err != nil {
 		return err
 	}
+	if err := validateDocker(c.Docker, "docker"); err != nil {
+		return err
+	}
 	for i := range c.Projects {
 		p := &c.Projects[i]
 		where := fmt.Sprintf("projects[%d]", i)
@@ -290,6 +294,9 @@ func (c *Config) evaluateSession() error {
 			return err
 		}
 		if err := validateScripts(&p.Scripts, where+".scripts"); err != nil {
+			return err
+		}
+		if err := validateDocker(p.Docker, where+".docker"); err != nil {
 			return err
 		}
 	}

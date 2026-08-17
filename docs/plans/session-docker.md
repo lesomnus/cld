@@ -57,7 +57,7 @@ cld는 컨테이너를 만들지 않으므로 이미 떠 있는 devcontainer에 
 ```yaml
 docker:
   mode: dind          # off(기본) | dind
-  image: docker:28-dind
+  image: docker:dind      # 기본값(움직이는 태그). 고정하려면 docker:28-dind 처럼
 
 projects:
   - match: ~/work/infra/**
@@ -106,7 +106,8 @@ dind 안에서 `docker run -v $(pwd):/app`을 하면 그 경로는 **엔진 컨�
 ## 단계
 
 - [x] 1. 계획 문서 (이 파일)
-- [ ] 2. 설정 스키마 — `docker:` 전역/프로젝트, 해석과 검증
+- [x] 2. 설정 스키마 — `docker:` 전역/프로젝트, 해석과 검증 (`cmd/config/docker.go`).
+      프로젝트 블록은 **필드 단위**로 덮어쓴다 — 이미지만 바꾸려다 mode가 날아가면 안 된다.
 - [ ] 3. `ensure_dind` — 네트워크·볼륨·엔진 생성, 연결, 준비 대기, `DOCKER_HOST` 레이어
 - [ ] 4. 정리 — `down`/`purge`가 엔진·네트워크·볼륨을 함께 처리
 - [ ] 5. 통합 테스트 — 실제 엔진에 대고 생성·연결·재사용·정리
