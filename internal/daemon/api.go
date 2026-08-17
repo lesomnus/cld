@@ -55,6 +55,9 @@ func (d *Daemon) api() http.Handler {
 	mux.HandleFunc("POST /claude/update/all", d.handle_update_all)
 	mux.HandleFunc("GET /claude/config", d.handle_get_config)
 	mux.HandleFunc("GET /session/env", d.handle_get_env)
+	// Host-only: driving the engine means exec'ing into its container, which
+	// needs the host engine — something a container has no access to anyway.
+	mux.HandleFunc("GET /docker/engine", d.handle_get_engine)
 	mux.HandleFunc("POST /auth/credentials", d.handle_set_credentials)
 	mux.HandleFunc("GET /usage", d.handle_usage(""))
 	return mux
@@ -708,6 +711,86 @@ func (d *Daemon) handle_get_env(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"vars": res.vars})
 }
 
+// DockerEngine describes the Docker engine cld runs for a devcontainer.
+type DockerEngine struct {
+	// Container is the engine container's id, which is what a client execs
+	// into to drive it — the engine is reachable only from the devcontainer's
+	// private network, never from the host.
+	Container string `json:"container"`
+	// Name is the engine container's name, and Endpoint what the session's
+	// DOCKER_HOST points at.
+	Name     string `json:"name"`
+	Endpoint string `json:"endpoint"`
+	Running  bool   `json:"running"`
+}
+
+// handle_get_engine reports the engine cld runs for a devcontainer, so
+// `cld docker` can drive it. It is a lookup, not a start: an engine appears
+// when the container is provisioned with `docker: {mode: dind}`.
+func (d *Daemon) handle_get_engine(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		http.Error(w, "name required", http.StatusBadRequest)
+		return
+	}
+
+	e := d.by_name(name)
+	if e == nil {
+		http.Error(w, "no such devcontainer", http.StatusNotFound)
+		return
+	}
+
+	type result struct {
+		engine     DockerEngine
+		configured bool
+		err        error
+	}
+	done := make(chan result, 1)
+	// On the container's worker, like the other read endpoints: the project key
+	// is derived from worker-owned fields, so reading them here would race
+	// provisioning.
+	if !e.mbox.post(func() {
+		if !d.cfg.DockerFor(e.item.LocalFolder).Enabled() {
+			done <- result{}
+			return
+		}
+		key := d.backup_key(e)
+		id, err := d.find_dind(d.base_ctx, key)
+		done <- result{
+			configured: true,
+			err:        err,
+			engine: DockerEngine{
+				Container: id,
+				Name:      dind_container_name(key),
+				Endpoint:  dind_endpoint(key),
+				Running:   id != "" && d.dind_running(d.base_ctx, id),
+			},
+		}
+	}) {
+		http.Error(w, "container is no longer tracked", http.StatusConflict)
+		return
+	}
+
+	res := <-done
+	if res.err != nil {
+		http.Error(w, res.err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !res.configured {
+		http.Error(w, "no engine: this project does not have `docker: {mode: dind}`",
+			http.StatusConflict)
+		return
+	}
+	if res.engine.Container == "" {
+		http.Error(w, "no engine yet: the devcontainer has not been provisioned with one",
+			http.StatusConflict)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(res.engine)
+}
+
 // maxCredentialsLen bounds the accepted credentials body. A ~/.claude
 // credentials file is a few hundred bytes; this is generous.
 const maxCredentialsLen = 16384
@@ -1098,6 +1181,40 @@ func GetSessionEnv(ctx context.Context, socket string, name string) ([]EnvVar, e
 		return nil, err
 	}
 	return out.Vars, nil
+}
+
+// GetDockerEngine returns the Docker engine cld runs for the named
+// devcontainer. Backs `cld docker`.
+func GetDockerEngine(ctx context.Context, socket string, name string) (DockerEngine, error) {
+	hc := NewSocketClient(socket)
+	url := "http://cld/docker/engine?name=" + urlpkg.QueryEscape(name)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return DockerEngine{}, err
+	}
+
+	res, err := hc.Do(req)
+	if err != nil {
+		return DockerEngine{}, fmt.Errorf("is `cld serve` running? %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(io.LimitReader(res.Body, 512))
+		body := strings.TrimSpace(string(raw))
+		// A daemon older than this CLI has no such route, and its router's bare
+		// "404 page not found" explains nothing on its own.
+		if res.StatusCode == http.StatusNotFound && !strings.Contains(body, "devcontainer") {
+			return DockerEngine{}, fmt.Errorf(
+				"%s — the running daemon may predate `cld docker`; re-run `cld install --recreate`", body)
+		}
+		return DockerEngine{}, fmt.Errorf("%s", body)
+	}
+
+	var out DockerEngine
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		return DockerEngine{}, err
+	}
+	return out, nil
 }
 
 // UpdateClaudeAll asks the daemon to re-inject the current Claude Code binary

@@ -60,6 +60,12 @@
 #docker:
 #  mode: dind          # off (default) | dind
 #  image: docker:dind  # pin it (docker:28-dind), or soften it (docker:dind-rootless)
+#  # A compose-shaped override for the engine container, resolved against this
+#  # file's directory. Defaults to cld.dind.yaml when that exists; naming one
+#  # here makes it required. Only keys that map onto a container are supported —
+#  # unknown ones are an error, not a silent no-op. `cld docker -- ps` drives the
+#  # engine, which is deliberately not reachable from the host.
+#  compose: cld.dind.yaml
 
 # The same three, scoped to the workspaces a glob matches. "match" is matched
 # against the host-side workspace path, exactly like "ignore" above. EVERY

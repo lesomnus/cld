@@ -2,7 +2,10 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -305,6 +308,28 @@ services:
 		require.NoError(t, err)
 		require.Equal(t, "infra", insp.Container.Config.Labels["team"])
 		require.EqualValues(t, 512*1024*1024, insp.Container.HostConfig.Memory)
+	})
+
+	t.Run("the API points cld docker at the engine", func(t *testing.T) {
+		rr := httptest.NewRecorder()
+		e.mbox = new_mailbox()
+		go e.mbox.run()
+		t.Cleanup(e.mbox.close)
+		e.publish()
+		d.entries = map[string]*entry{e.id: e}
+		d.handle_get_engine(rr, httptest.NewRequest(http.MethodGet, "/docker/engine?name="+e.item.Name, nil))
+		require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
+
+		var got DockerEngine
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &got))
+		require.Equal(t, dind_container_name(key), got.Name)
+		require.Equal(t, dind_endpoint(key), got.Endpoint)
+		require.True(t, got.Running)
+
+		// The id is what `cld docker` execs into, so it must be the engine.
+		engine, err := d.find_dind(ctx, key)
+		require.NoError(t, err)
+		require.Equal(t, engine, got.Container)
 	})
 
 	t.Run("a second reconcile reuses the engine", func(t *testing.T) {

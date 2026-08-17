@@ -150,6 +150,7 @@ keeps running; reopen (or `cld it myapp` from the host) to pick it back up.
 | Edit the config shared into containers | `cld setting edit` (`… edit claude-md`)         |
 | See a container's effective config  | `cld setting cat <name>` (pipes: `… cat app \| jq`) |
 | See the env its claude session runs with | `cld setting env <name>`                      |
+| Drive the docker engine cld runs for it | `cld docker -- ps` (see below; off by default) |
 | Remove a devcontainer               | `cld down <name>` (keeps the conversation backup)  |
 | Remove every devcontainer cld manages | `cld down --all` (skips `cld.ignore` / non-cld)  |
 | Delete a devcontainer for good      | `cld purge <name>` (also deletes volumes + backup) |
@@ -319,6 +320,14 @@ day in `cld up`/`cld it`/`cld ls`/`cld down`.
   your `cld.yaml`, or cld itself). That last column is the point: when a variable
   you set in `cld.yaml` does not take, it names what won. `--export` prints shell
   assignments instead. See [docs/session-env.md](docs/session-env.md).
+- **`cld docker [--name X] -- [args...]`** — run a `docker` command against the
+  engine cld runs for a devcontainer (`docker: {mode: dind}`). That engine lives
+  on a private network with its devcontainer and is deliberately unreachable
+  from the host, so the command runs inside the engine's own container — the
+  terminal is handed over, so `cld docker -- run -it alpine sh` works. Arguments
+  after `--` reach `docker` untouched; with none, it prints what and where the
+  engine is. See
+  [docs/session-docker.md](docs/session-docker.md).
 - **`cld config`** — print cld's own daemon configuration as YAML (defaults merged
   with your `cld.yaml`) — distinct from `cld setting`, which is claude's config.
   Use it to check what settings are in effect.
@@ -471,6 +480,12 @@ projects:
     docker:
       mode: dind
 ```
+
+A `cld.dind.yaml` next to your `cld.yaml` overrides the engine container —
+dockerd flags, extra volumes, capabilities, limits — in a compose-shaped file
+(a documented subset; unknown keys are rejected rather than ignored). And since
+the engine is deliberately unreachable from your host, `cld docker -- ps` /
+`cld docker -- run -it alpine sh` drives it for you.
 
 cld creates the engine, attaches the devcontainer to a private network with it
 (networks, unlike mounts, can be attached to a running container — which is why

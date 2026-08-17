@@ -407,6 +407,17 @@ func (d *Daemon) find_dind(ctx context.Context, key string) (string, error) {
 	return res.Items[0].ID, nil
 }
 
+// dind_running reports whether an engine container is up. A stopped one is
+// still worth reporting to `cld docker`, which explains it rather than failing
+// with a bare exec error.
+func (d *Daemon) dind_running(ctx context.Context, id string) bool {
+	insp, err := d.cli.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
+	if err != nil {
+		return false
+	}
+	return insp.Container.State != nil && insp.Container.State.Running
+}
+
 // attach_network connects the devcontainer to the project's network. Already
 // being attached is the normal case on a re-reconcile, not an error.
 func (d *Daemon) attach_network(ctx context.Context, net, id string) error {

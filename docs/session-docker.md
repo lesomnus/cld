@@ -101,6 +101,91 @@ projects:
 `cld setting env <name>` shows which one took, and where it came from — `cld
 docker` for cld's engine, `cld.yaml …` for yours.
 
+## Overriding the engine container
+
+Drop a **`cld.dind.yaml`** next to your `cld.yaml` and cld folds it into the
+engine it creates:
+
+```yaml
+# ~/.config/cld/cld.dind.yaml
+services:
+  dind:
+    command: ["--insecure-registry", "registry.internal:5000"]
+    volumes:
+      - /etc/ssl/corp:/etc/docker/certs.d:ro   # absolute host paths only
+    environment:
+      HTTP_PROXY: http://proxy.internal:3128
+    mem_limit: 8g
+    cpus: 4
+```
+
+Point at a different file with `docker.compose` — per project, if you like:
+
+```yaml
+projects:
+  - match: ~/work/infra/**
+    docker: {mode: dind, compose: infra.dind.yaml}
+```
+
+A relative name resolves against the config directory. A file named explicitly
+must exist (a typo is an error, not a silently skipped override); the default
+`cld.dind.yaml` is used only if it is there.
+
+**It is compose-shaped, not compose.** cld builds the engine through the Docker
+API and runs no compose CLI, so the supported keys are the ones that map onto a
+container:
+
+| | |
+| --- | --- |
+| replace what cld set | `image`, `command`, `entrypoint`, `privileged`, `mem_limit`, `cpus` |
+| merge key by key | `environment`, `labels`, `sysctls` |
+| append to what cld set | `volumes`, `cap_add`, `cap_drop`, `devices`, `security_opt`, `extra_hosts`, `dns`, `ports` |
+
+Anything else — `healthcheck`, `depends_on`, `networks`, … — is an **error when
+the file is read**. Accepting a key and quietly ignoring it would leave you
+believing it applies.
+
+Two rules worth remembering:
+
+- **Volume sources must be absolute host paths.** The engine resolves them on
+  the host, where the daemon's own view of the filesystem does not apply, so
+  `~` cannot be expanded and a named volume cannot be created.
+- **Editing the override rebuilds the engine.** A container cannot be
+  reconfigured in place; cld hashes the resolved spec into a label and replaces
+  the engine when it changes. The image cache volume survives.
+
+Running rootless is `privileged: false` plus whatever your image needs:
+
+```yaml
+services:
+  dind:
+    image: docker:dind-rootless
+    privileged: false
+```
+
+## Talking to the engine: `cld docker`
+
+The engine sits on a private network with its devcontainer and is not reachable
+from your host, so `docker -H …` will not find it. `cld docker` runs the command
+inside the engine's own container, where the CLI already lives:
+
+```sh
+$ cld docker                          # what and where the engine is
+cld-api-c24c3b-dind  tcp://cld-api-c24c3b-dind:2375  running
+
+$ cld docker -- ps
+$ cld docker -- images
+$ cld docker -- run --rm -it alpine sh    # interactive, as you would expect
+$ cld docker --name api -- system prune -f
+```
+
+Everything after `--` goes to `docker` untouched, which is what keeps its flags
+(`--rm`, `-it`) from being read as cld's own. With no `--name` it targets the
+only devcontainer, like `cld it`. It needs
+access to your host's own Docker (the same access `cld up` needs), so it is a
+host-side command; inside a devcontainer the plain `docker` CLI already points
+at this engine through `DOCKER_HOST`.
+
 ## Volume paths: the thing that surprises everyone
 
 A path in `docker run -v` is resolved by the **engine**, not by the container
@@ -149,6 +234,8 @@ network.
 - **No shared engine across projects.** Isolation is the point; the cost is a
   separate image cache per project.
 - **The engine is not reachable from your host**, only from the devcontainer on
-  its private network.
+  its private network — `cld docker` exists because of this. Publish it with
+  `ports:` in the override if you really want it exposed, knowing it has no TLS
+  and no auth.
 - Setting up `docker compose` inside the session works, with the same path rule
   as above for any bind mount it declares.

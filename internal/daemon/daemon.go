@@ -343,6 +343,9 @@ func New(cfg *config.Config, cli *client.Client, log *slog.Logger) (*Daemon, err
 		tel:      newTelemetryStore(),
 		week:     newWeeklyStore(cfg.WeeklyUsagePath()),
 		entries:  map[string]*entry{},
+		// Run replaces this with its own cancellable context; a usable default
+		// means a daemon can answer a query before Run is called, as tests do.
+		base_ctx: context.Background(),
 	}, nil
 }
 
