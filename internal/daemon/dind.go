@@ -2,12 +2,19 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"net/netip"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/docker/go-units"
 	"github.com/lesomnus/cld/cmd/config"
 	"github.com/lesomnus/cld/internal/dockerx"
 	"github.com/moby/moby/api/types/container"
@@ -30,6 +37,10 @@ import (
 // project key. The engine carries no devcontainer.local_folder label, so the
 // daemon never mistakes it for a devcontainer to provision.
 const dindLabel = "cld.dind"
+
+// dindSpecLabel records the hash of the spec an engine was created from, so a
+// changed image, workspace or override is noticed on the next reconcile.
+const dindSpecLabel = "cld.dind.spec"
 
 // dindReadyTimeout bounds the wait for the engine to accept commands. It is
 // best-effort: exceeding it leaves the session without DOCKER_HOST rather than
@@ -71,7 +82,14 @@ func (d *Daemon) ensure_dind(ctx context.Context, e *entry, id string) {
 		log.Warn("dind: network failed", slog.String("error", err.Error()))
 		return
 	}
-	engine, err := d.ensure_dind_engine(ctx, e, key, net, cfg.Image)
+	over, err := d.cfg.LoadDindOverride(e.item.LocalFolder)
+	if err != nil {
+		// The user wrote an override cld could not read; running the engine
+		// without it would apply settings they think are in effect.
+		log.Warn("dind: override failed", slog.String("error", err.Error()))
+		return
+	}
+	engine, err := d.ensure_dind_engine(ctx, e, key, net, cfg, over)
 	if err != nil {
 		log.Warn("dind: engine failed", slog.String("error", err.Error()))
 		return
@@ -119,11 +137,13 @@ func (d *Daemon) ensure_dind_network(ctx context.Context, key string) (string, e
 }
 
 // ensure_dind_engine returns the running engine container for the project. An
-// existing container is reused, started if stopped, and replaced when the
-// configuration it was created from no longer matches.
-func (d *Daemon) ensure_dind_engine(ctx context.Context, e *entry, key, net, image string) (string, error) {
-	name := dind_container_name(key)
-	binds := dind_binds(e, key)
+// existing container is reused, started if stopped, and replaced when the spec
+// it was created from no longer matches — a container cannot be reconfigured in
+// place, so an edited override means a new one.
+func (d *Daemon) ensure_dind_engine(ctx context.Context, e *entry, key, net string, cfg config.DockerConfig, over *config.DindService) (string, error) {
+	opts := dind_create_options(e, key, net, cfg, over)
+	sum := dind_spec_hash(opts)
+	opts.Config.Labels[dindSpecLabel] = sum
 
 	if id, err := d.find_dind(ctx, key); err != nil {
 		return "", err
@@ -132,7 +152,7 @@ func (d *Daemon) ensure_dind_engine(ctx context.Context, e *entry, key, net, ima
 		if err != nil {
 			return "", err
 		}
-		if dind_matches(insp.Container, image, binds) {
+		if dind_matches(insp.Container, sum) {
 			if insp.Container.State == nil || !insp.Container.State.Running {
 				if _, err := d.cli.ContainerStart(ctx, id, client.ContainerStartOptions{}); err != nil {
 					return "", fmt.Errorf("start engine: %w", err)
@@ -140,22 +160,33 @@ func (d *Daemon) ensure_dind_engine(ctx context.Context, e *entry, key, net, ima
 			}
 			return id, nil
 		}
-		// The image or the workspace changed: a container cannot be
-		// reconfigured in place, so replace it. The image cache lives in a
-		// named volume, which survives this.
+		// The image cache lives in a named volume, which survives the replacement.
 		if _, err := d.cli.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true}); err != nil {
 			return "", fmt.Errorf("replace engine: %w", err)
 		}
 	}
 
-	if err := d.pull_if_missing(ctx, image); err != nil {
+	if err := d.pull_if_missing(ctx, opts.Config.Image); err != nil {
 		return "", err
 	}
 
-	created, err := d.cli.ContainerCreate(ctx, client.ContainerCreateOptions{
-		Name: name,
+	created, err := d.cli.ContainerCreate(ctx, opts)
+	if err != nil {
+		return "", fmt.Errorf("create engine: %w", err)
+	}
+	if _, err := d.cli.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
+		return "", fmt.Errorf("start engine: %w", err)
+	}
+	return created.ID, nil
+}
+
+// dind_create_options is cld's own engine definition with the user's override
+// applied over it, if there is one.
+func dind_create_options(e *entry, key, net string, cfg config.DockerConfig, over *config.DindService) client.ContainerCreateOptions {
+	opts := client.ContainerCreateOptions{
+		Name: dind_container_name(key),
 		Config: &container.Config{
-			Image:  image,
+			Image:  cfg.Image,
 			Labels: map[string]string{dindLabel: key},
 			// An empty DOCKER_TLS_CERTDIR is how the official image is told to
 			// serve the plain port instead of generating TLS material. The
@@ -166,19 +197,154 @@ func (d *Daemon) ensure_dind_engine(ctx context.Context, e *entry, key, net, ima
 			// docker-in-docker needs it. This is the sharpest edge of the
 			// feature and the reason it is opt-in.
 			Privileged: true,
-			Binds:      binds,
+			Binds:      dind_binds(e, key),
 		},
 		NetworkingConfig: &network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{net: {}},
 		},
-	})
+	}
+	apply_dind_override(&opts, over)
+	return opts
+}
+
+// apply_dind_override folds the user's compose-shaped override into the engine
+// definition: scalars replace, maps merge key by key, and lists append to what
+// cld set — so an extra volume or capability adds to the engine instead of
+// replacing its storage or its privileges. A nil override changes nothing.
+//
+// Anything the override cannot express was rejected when the file was read, so
+// there is nothing to silently drop here.
+func apply_dind_override(opts *client.ContainerCreateOptions, o *config.DindService) {
+	if o == nil {
+		return
+	}
+	cfg, host := opts.Config, opts.HostConfig
+
+	if o.Image != "" {
+		cfg.Image = o.Image
+	}
+	if len(o.Command) > 0 {
+		cfg.Cmd = o.Command
+	}
+	if len(o.Entrypoint) > 0 {
+		cfg.Entrypoint = o.Entrypoint
+	}
+	for _, k := range sorted_keys(o.Environment) {
+		cfg.Env = append(cfg.Env, k+"="+o.Environment[k])
+	}
+	for _, k := range sorted_keys(o.Labels) {
+		cfg.Labels[k] = o.Labels[k]
+	}
+
+	host.Binds = append(host.Binds, o.Volumes...)
+	if o.Privileged != nil {
+		host.Privileged = *o.Privileged
+	}
+	host.CapAdd = append(host.CapAdd, o.CapAdd...)
+	host.CapDrop = append(host.CapDrop, o.CapDrop...)
+	host.SecurityOpt = append(host.SecurityOpt, o.SecurityOpt...)
+	host.ExtraHosts = append(host.ExtraHosts, o.ExtraHosts...)
+	for _, addr := range o.Dns {
+		if ip, err := netip.ParseAddr(addr); err == nil {
+			host.DNS = append(host.DNS, ip)
+		}
+	}
+	if len(o.Sysctls) > 0 && host.Sysctls == nil {
+		host.Sysctls = map[string]string{}
+	}
+	for k, v := range o.Sysctls {
+		host.Sysctls[k] = v
+	}
+	for _, dev := range o.Devices {
+		host.Devices = append(host.Devices, device_mapping(dev))
+	}
+	for _, spec := range o.Ports {
+		port, binding, ok := parse_port(spec)
+		if !ok {
+			continue // rejected when the file was read
+		}
+		if cfg.ExposedPorts == nil {
+			cfg.ExposedPorts = network.PortSet{}
+		}
+		cfg.ExposedPorts[port] = struct{}{}
+		if host.PortBindings == nil {
+			host.PortBindings = network.PortMap{}
+		}
+		host.PortBindings[port] = append(host.PortBindings[port], binding)
+	}
+	if o.MemLimit != "" {
+		if n, err := units.RAMInBytes(o.MemLimit); err == nil {
+			host.Memory = n
+		}
+	}
+	if o.Cpus > 0 {
+		host.NanoCPUs = int64(o.Cpus * 1e9)
+	}
+}
+
+// parse_port reads a compose port mapping: "HOST:CONTAINER[/proto]", or a bare
+// "CONTAINER[/proto]" for an ephemeral host port. The engine has no TLS and no
+// auth, so publishing it is a deliberate act — cld does not do it by default.
+func parse_port(spec string) (network.Port, network.PortBinding, bool) {
+	proto := "tcp"
+	if s, p, ok := strings.Cut(spec, "/"); ok {
+		spec, proto = s, p
+	}
+
+	host_ip, host_port, container := "", "", spec
+	switch parts := strings.Split(spec, ":"); len(parts) {
+	case 1:
+	case 2:
+		host_port, container = parts[0], parts[1]
+	case 3:
+		host_ip, host_port, container = parts[0], parts[1], parts[2]
+	default:
+		return network.Port{}, network.PortBinding{}, false
+	}
+
+	num, err := strconv.ParseUint(container, 10, 16)
 	if err != nil {
-		return "", fmt.Errorf("create engine: %w", err)
+		return network.Port{}, network.PortBinding{}, false
 	}
-	if _, err := d.cli.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
-		return "", fmt.Errorf("start engine: %w", err)
+	port, err := network.ParsePort(fmt.Sprintf("%d/%s", num, proto))
+	if err != nil {
+		return network.Port{}, network.PortBinding{}, false
 	}
-	return created.ID, nil
+
+	binding := network.PortBinding{HostPort: host_port}
+	if host_ip != "" {
+		ip, err := netip.ParseAddr(host_ip)
+		if err != nil {
+			return network.Port{}, network.PortBinding{}, false
+		}
+		binding.HostIP = ip
+	}
+	return port, binding, true
+}
+
+// device_mapping parses a compose device string, "host[:container[:perms]]".
+func device_mapping(s string) container.DeviceMapping {
+	parts := strings.SplitN(s, ":", 3)
+	m := container.DeviceMapping{PathOnHost: parts[0], PathInContainer: parts[0], CgroupPermissions: "rwm"}
+	if len(parts) > 1 && parts[1] != "" {
+		m.PathInContainer = parts[1]
+	}
+	if len(parts) > 2 && parts[2] != "" {
+		m.CgroupPermissions = parts[2]
+	}
+	return m
+}
+
+// sorted_keys keeps generated environment and labels deterministic, so the
+// spec hash does not change with map iteration order and rebuild the engine
+// for no reason.
+func sorted_keys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // dind_binds is the engine's storage plus the workspace.
@@ -197,23 +363,32 @@ func dind_binds(e *entry, key string) []string {
 }
 
 // dind_matches reports whether an existing engine was created from the same
-// configuration, since neither an image nor a bind can be changed in place.
-func dind_matches(c container_inspect, image string, binds []string) bool {
-	if c.Config == nil || c.Config.Image != image {
+// spec. The spec is hashed into a label at creation, so this covers everything
+// that goes into the container — image, binds, and every field of an override —
+// rather than the handful of things worth comparing by hand.
+func dind_matches(c container_inspect, sum string) bool {
+	if c.Config == nil {
 		return false
 	}
-	if c.HostConfig == nil {
-		return false
+	return c.Config.Labels[dindSpecLabel] == sum
+}
+
+// dind_spec_hash digests the create options. It is deliberately over the whole
+// thing: an override edited in any way should produce a new engine, and
+// forgetting to add a newly supported field here would silently keep the old
+// container.
+func dind_spec_hash(opts client.ContainerCreateOptions) string {
+	b, err := json.Marshal(struct {
+		Config     *container.Config     `json:"config"`
+		HostConfig *container.HostConfig `json:"host_config"`
+	}{opts.Config, opts.HostConfig})
+	if err != nil {
+		// Cannot happen for these types; a constant would make every engine
+		// look unchanged, so prefer a value that forces a rebuild.
+		return "unhashable"
 	}
-	if len(c.HostConfig.Binds) != len(binds) {
-		return false
-	}
-	for i, b := range binds {
-		if c.HostConfig.Binds[i] != b {
-			return false
-		}
-	}
-	return true
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 // find_dind returns the project's engine container id, running or not, or ""

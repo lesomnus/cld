@@ -119,6 +119,18 @@ dind 안에서 `docker run -v $(pwd):/app`을 하면 그 경로는 **엔진 컨�
       닿는 것까지 확인(`dind_test.go`). 재사용·교체·정리도 포함.
 - [x] 6. 사용자 문서 — `docs/session-docker.md`, README, cld.yaml, 위험 고지
 
+## 2차 작업
+
+- [x] 7. 설정 전달 — `~/.config/cld/cld.yaml` 규약. `cld install`이 설정 파일을
+      마운트하지 않아 데몬이 사용자 설정을 아예 못 읽고 있었다(세션 env/files/scripts
+      포함). 호스트 홈 읽기 전용 마운트를 통해 도출하므로 추가 마운트가 없다.
+- [x] 8. 엔진 override — 설정 디렉터리의 `cld.dind.yaml`(compose 형태 서브셋).
+      compose가 **아니다**: 데몬에는 compose CLI가 없고 SDK로 컨테이너를 만드므로,
+      컨테이너에 매핑되는 키만 지원하고 모르는 키는 로드 시 거절한다(healthcheck를
+      받아놓고 무시하는 것보다 낫다). 병합은 스칼라 교체 / 맵 키 단위 병합 / 리스트
+      추가. 스펙 해시를 라벨에 남겨 override를 고치면 엔진이 재생성된다.
+- [ ] 9. `cld docker` — cld가 띄운 엔진에 명령 보내기.
+
 ## 범위 밖
 
 - 소켓 릴레이 전송(`cld x docker`).

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -40,27 +41,152 @@ func TestDindBinds(t *testing.T) {
 	})
 }
 
-func TestDindMatches(t *testing.T) {
-	binds := []string{"vol:/var/lib/docker", "/host:/workspace"}
-	insp := func(image string, b []string) container_inspect {
-		return container_inspect{
-			Config:     &container.Config{Image: image},
-			HostConfig: &container.HostConfig{Binds: b},
-		}
+func TestDindSpec(t *testing.T) {
+	e := &entry{item: Item{LocalFolder: "/host/api", Workspace: "/workspace"}}
+	cfg := config.DockerConfig{Mode: config.DockerModeDind, Image: "docker:dind"}
+	hash := func(c config.DockerConfig, over *config.DindService) string {
+		return dind_spec_hash(dind_create_options(e, "cld-api", "net", c, over))
 	}
 
-	require.True(t, dind_matches(insp("docker:dind", binds), "docker:dind", binds))
+	base := hash(cfg, nil)
 
-	t.Run("a changed image means replace", func(t *testing.T) {
-		require.False(t, dind_matches(insp("docker:dind", binds), "docker:28-dind", binds))
+	t.Run("is stable", func(t *testing.T) {
+		require.Equal(t, base, hash(cfg, nil))
 	})
-	t.Run("a changed workspace means replace", func(t *testing.T) {
-		other := []string{"vol:/var/lib/docker", "/elsewhere:/workspace"}
-		require.False(t, dind_matches(insp("docker:dind", other), "docker:dind", binds))
+
+	t.Run("changes with the image", func(t *testing.T) {
+		other := cfg
+		other.Image = "docker:28-dind"
+		require.NotEqual(t, base, hash(other, nil))
 	})
-	t.Run("a partial inspect is never a match", func(t *testing.T) {
-		require.False(t, dind_matches(container_inspect{}, "docker:dind", binds))
+
+	t.Run("changes with the workspace", func(t *testing.T) {
+		moved := &entry{item: Item{LocalFolder: "/host/api", Workspace: "/elsewhere"}}
+		require.NotEqual(t, base,
+			dind_spec_hash(dind_create_options(moved, "cld-api", "net", cfg, nil)))
 	})
+
+	t.Run("changes with any override", func(t *testing.T) {
+		// An edited override has to produce a new engine: a container cannot be
+		// reconfigured in place.
+		require.NotEqual(t, base, hash(cfg, &config.DindService{Volumes: []string{"/a:/b"}}))
+		require.NotEqual(t, base, hash(cfg, &config.DindService{Command: config.StringList{"--mtu=1400"}}))
+		require.NotEqual(t, base, hash(cfg, &config.DindService{Cpus: 2}))
+	})
+
+	t.Run("does not change with map ordering", func(t *testing.T) {
+		over := &config.DindService{Environment: config.EnvList{
+			"A": "1", "B": "2", "C": "3", "D": "4", "E": "5",
+		}}
+		first := hash(cfg, over)
+		for range 20 {
+			require.Equal(t, first, hash(cfg, over), "map iteration order must not rebuild the engine")
+		}
+	})
+
+	t.Run("an engine is matched by its recorded spec", func(t *testing.T) {
+		c := container_inspect{Config: &container.Config{
+			Labels: map[string]string{dindSpecLabel: base},
+		}}
+		require.True(t, dind_matches(c, base))
+		require.False(t, dind_matches(c, "other"))
+		require.False(t, dind_matches(container_inspect{}, base))
+	})
+}
+
+func TestDindOverrideApplies(t *testing.T) {
+	e := &entry{item: Item{LocalFolder: "/host/api", Workspace: "/workspace"}}
+	cfg := config.DockerConfig{Mode: config.DockerModeDind, Image: "docker:dind"}
+	yes := true
+	no := false
+
+	t.Run("lists append to what cld set", func(t *testing.T) {
+		// An extra volume must not cost the engine its own storage.
+		opts := dind_create_options(e, "cld-api", "net", cfg, &config.DindService{
+			Volumes: []string{"/host/certs:/etc/docker/certs.d:ro"},
+			CapAdd:  []string{"SYS_ADMIN"},
+		})
+		require.Equal(t, []string{
+			"cld-api-dind-data:/var/lib/docker",
+			"/host/api:/workspace",
+			"/host/certs:/etc/docker/certs.d:ro",
+		}, opts.HostConfig.Binds)
+		require.Equal(t, []string{"SYS_ADMIN"}, opts.HostConfig.CapAdd)
+	})
+
+	t.Run("scalars replace", func(t *testing.T) {
+		opts := dind_create_options(e, "cld-api", "net", cfg, &config.DindService{
+			Image:      "docker:dind-rootless",
+			Privileged: &no,
+			Command:    config.StringList{"--insecure-registry", "reg:5000"},
+			MemLimit:   "4g",
+			Cpus:       2.5,
+		})
+		require.Equal(t, "docker:dind-rootless", opts.Config.Image)
+		require.False(t, opts.HostConfig.Privileged)
+		require.Equal(t, []string{"--insecure-registry", "reg:5000"}, []string(opts.Config.Cmd))
+		require.EqualValues(t, 4*1024*1024*1024, opts.HostConfig.Memory)
+		require.EqualValues(t, 2.5e9, opts.HostConfig.NanoCPUs)
+
+		back := dind_create_options(e, "cld-api", "net", cfg, &config.DindService{Privileged: &yes})
+		require.True(t, back.HostConfig.Privileged)
+	})
+
+	t.Run("maps merge, and cld's own labels survive", func(t *testing.T) {
+		opts := dind_create_options(e, "cld-api", "net", cfg, &config.DindService{
+			Environment: config.EnvList{"HTTP_PROXY": "http://proxy:3128"},
+			Labels:      map[string]string{"team": "infra"},
+			Sysctls:     map[string]string{"net.ipv4.ip_forward": "1"},
+		})
+		require.Contains(t, opts.Config.Env, "DOCKER_TLS_CERTDIR=")
+		require.Contains(t, opts.Config.Env, "HTTP_PROXY=http://proxy:3128")
+		require.Equal(t, "infra", opts.Config.Labels["team"])
+		require.Equal(t, "cld-api", opts.Config.Labels[dindLabel],
+			"an override must not orphan the engine by dropping the label cleanup finds it by")
+		require.Equal(t, "1", opts.HostConfig.Sysctls["net.ipv4.ip_forward"])
+	})
+
+	t.Run("devices and ports", func(t *testing.T) {
+		opts := dind_create_options(e, "cld-api", "net", cfg, &config.DindService{
+			Devices: []string{"/dev/fuse", "/dev/net/tun:/dev/tun:rw"},
+			Ports:   []string{"12375:2375"},
+		})
+		require.Equal(t, "/dev/fuse", opts.HostConfig.Devices[0].PathOnHost)
+		require.Equal(t, "/dev/fuse", opts.HostConfig.Devices[0].PathInContainer)
+		require.Equal(t, "rwm", opts.HostConfig.Devices[0].CgroupPermissions)
+		require.Equal(t, "/dev/tun", opts.HostConfig.Devices[1].PathInContainer)
+		require.Equal(t, "rw", opts.HostConfig.Devices[1].CgroupPermissions)
+
+		port, _, ok := parse_port("12375:2375")
+		require.True(t, ok)
+		require.Len(t, opts.HostConfig.PortBindings[port], 1)
+		require.Equal(t, "12375", opts.HostConfig.PortBindings[port][0].HostPort)
+	})
+
+	t.Run("nil override changes nothing", func(t *testing.T) {
+		require.Equal(t,
+			dind_spec_hash(dind_create_options(e, "cld-api", "net", cfg, nil)),
+			dind_spec_hash(dind_create_options(e, "cld-api", "net", cfg, &config.DindService{})))
+	})
+}
+
+func TestParsePort(t *testing.T) {
+	for _, tc := range []struct{ in, port, host string }{
+		{"2375", "2375/tcp", ""},
+		{"12375:2375", "2375/tcp", "12375"},
+		{"127.0.0.1:12375:2375", "2375/tcp", "12375"},
+		{"5353:53/udp", "53/udp", "5353"},
+	} {
+		port, binding, ok := parse_port(tc.in)
+		require.True(t, ok, tc.in)
+		require.Equal(t, tc.port, port.String(), tc.in)
+		require.Equal(t, tc.host, binding.HostPort, tc.in)
+	}
+
+	for _, in := range []string{"", "a:b", "1:2:3:4", "notaport"} {
+		_, _, ok := parse_port(in)
+		require.False(t, ok, in)
+	}
 }
 
 func TestDindEnv(t *testing.T) {
@@ -118,8 +244,23 @@ func TestDindLifecycle(t *testing.T) {
 
 	id := run_container_labeled(t, cli, "", map[string]string{})
 
-	cfg := &config.Config{CacheDir: t.TempDir(), DataDir: t.TempDir()}
-	cfg.Docker = config.DockerConfig{Mode: config.DockerModeDind}
+	// File-backed, so the override beside cld.yaml is exercised end to end.
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "cld.yaml"),
+		[]byte("docker: {mode: dind}\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, config.DindFileName), []byte(`
+services:
+  dind:
+    labels:
+      team: infra
+    mem_limit: 512m
+`), 0o644))
+
+	cfg, err := config.ReadFromFile(filepath.Join(dir, "cld.yaml"))
+	require.NoError(t, err)
+	require.NoError(t, cfg.Evaluate())
+	cfg.CacheDir, cfg.DataDir = t.TempDir(), t.TempDir()
+
 	d, err := New(cfg, cli, slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	require.NoError(t, err)
 
@@ -157,6 +298,15 @@ func TestDindLifecycle(t *testing.T) {
 		require.Contains(t, insp.Container.HostConfig.Binds, e.item.LocalFolder+":"+e.item.Workspace)
 	})
 
+	t.Run("the override reached the engine", func(t *testing.T) {
+		engine, err := d.find_dind(ctx, key)
+		require.NoError(t, err)
+		insp, err := cli.ContainerInspect(ctx, engine, client.ContainerInspectOptions{})
+		require.NoError(t, err)
+		require.Equal(t, "infra", insp.Container.Config.Labels["team"])
+		require.EqualValues(t, 512*1024*1024, insp.Container.HostConfig.Memory)
+	})
+
 	t.Run("a second reconcile reuses the engine", func(t *testing.T) {
 		before, err := d.find_dind(ctx, key)
 		require.NoError(t, err)
@@ -167,6 +317,29 @@ func TestDindLifecycle(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, before, after, "the engine must not be recreated on every reconcile")
 		require.Equal(t, dind_endpoint(key), e.docker_host)
+	})
+
+	t.Run("an edited override replaces the engine", func(t *testing.T) {
+		// A container cannot be reconfigured in place, so the spec hash has to
+		// notice and rebuild.
+		before, err := d.find_dind(ctx, key)
+		require.NoError(t, err)
+
+		require.NoError(t, os.WriteFile(filepath.Join(dir, config.DindFileName), []byte(`
+services:
+  dind:
+    labels:
+      team: platform
+`), 0o644))
+		d.ensure_dind(ctx, e, id)
+
+		after, err := d.find_dind(ctx, key)
+		require.NoError(t, err)
+		require.NotEqual(t, before, after)
+
+		insp, err := cli.ContainerInspect(ctx, after, client.ContainerInspectOptions{})
+		require.NoError(t, err)
+		require.Equal(t, "platform", insp.Container.Config.Labels["team"])
 	})
 
 	t.Run("a changed workspace replaces the engine", func(t *testing.T) {

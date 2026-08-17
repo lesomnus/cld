@@ -36,6 +36,12 @@ type DockerConfig struct {
 	// Image the engine runs from; defaults to DockerImageDefault. Point it at
 	// docker:dind-rootless to trade capability for a smaller blast radius.
 	Image string `yaml:"image"`
+	// Compose names a compose-shaped file that overrides the engine container
+	// cld would otherwise create — extra volumes, dockerd flags, capabilities.
+	// Relative paths resolve against the config directory. Defaults to
+	// DindFileName there, used when it exists; naming one explicitly makes it
+	// required. See dind_file.go.
+	Compose string `yaml:"compose"`
 }
 
 // Enabled reports whether cld should provide an engine.
@@ -52,6 +58,9 @@ func (c *Config) DockerFor(local_folder string) DockerConfig {
 		}
 		if p.Docker.Image != "" {
 			out.Image = p.Docker.Image
+		}
+		if p.Docker.Compose != "" {
+			out.Compose = p.Docker.Compose
 		}
 	}
 	if out.Mode == "" {
