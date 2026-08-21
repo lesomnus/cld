@@ -332,7 +332,9 @@ day in `cld up`/`cld it`/`cld ls`/`cld down`.
   [docs/session-docker.md](docs/session-docker.md).
 - **`cld config`** — print cld's own daemon configuration as YAML (defaults merged
   with your `cld.yaml`) — distinct from `cld setting`, which is claude's config.
-  Use it to check what settings are in effect.
+  `cld config --daemon` asks the **daemon** what it loaded, and from which file:
+  the client and the daemon read different files on different filesystems, so
+  when a setting seems not to apply, that is the answer.
 - **`cld version`** — print the cld version and build info.
 
 ### Internal
@@ -400,10 +402,14 @@ $ source <(cld completion zsh)   # or add this line to ~/.zshrc
 
 ## Configuration
 
-cld's own config lives at **`~/.config/cld/cld.yaml`**. `cld config edit` opens
-it (creating it on first save), `cld config` prints the effective values, and a
-global `--config <path>` overrides the choice. A `cld.yaml` in the working
-directory is used ahead of it, which is handy inside a checkout.
+cld's own config lives at **`~/.config/cld/cld.yaml`** — that one path, from
+any directory. `cld config edit` opens it (creating it on first save), `cld
+config` prints the effective values, and a global `--config <path>` reads
+somewhere else when you mean to.
+
+The working directory is deliberately not searched: a `cld.yaml` in whatever
+checkout you happened to be in would be read by the client while the daemon kept
+using its own, with nothing to show for the disagreement.
 
 `cld config edit dind` opens the companion file that overrides the Docker engine
 cld runs (`cld.dind.yaml`, beside it). Both editors reject a save they cannot

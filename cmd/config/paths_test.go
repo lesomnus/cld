@@ -26,13 +26,12 @@ func TestUserConfigDir(t *testing.T) {
 
 func TestDefaultConfigPaths(t *testing.T) {
 	t.Setenv(config.HostHomeEnv, "/host-home")
-	got := config.DefaultConfigPaths()
 
-	// The working directory still comes first, for a checkout being worked on.
+	// The working directory is deliberately absent: a cld.yaml in whatever
+	// checkout you are in would be read by the client while the daemon kept
+	// using its own, and neither would say so.
 	require.Equal(t, []string{
-		"cld.yaml",
-		"cld.yml",
 		"/host-home/.config/cld/cld.yaml",
 		"/host-home/.config/cld/cld.yml",
-	}, got)
+	}, config.DefaultConfigPaths())
 }

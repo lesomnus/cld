@@ -17,10 +17,9 @@ func TestConfigVisibilityNote(t *testing.T) {
 		require.Empty(t, configVisibilityNote(filepath.Join(daemon_dir, "cld.dind.yaml"), daemon_dir, false))
 	})
 
-	t.Run("warns about a cld.yaml in a checkout", func(t *testing.T) {
-		// The working directory is searched first, so any repo carrying a
-		// cld.yaml — this one does — captures the edit.
-		note := configVisibilityNote("/workspace/cld.dind.yaml", daemon_dir, false)
+	t.Run("warns about a file the daemon was not pointed at", func(t *testing.T) {
+		// Reachable with --config: the client reads it, the daemon does not.
+		note := configVisibilityNote("/srv/elsewhere/cld.yaml", daemon_dir, false)
 		require.Contains(t, note, daemon_dir)
 		require.Contains(t, note, "client-only")
 	})

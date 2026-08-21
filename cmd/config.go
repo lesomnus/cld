@@ -10,6 +10,7 @@ import (
 
 	"github.com/goccy/go-yaml"
 	"github.com/lesomnus/cld/cmd/config"
+	"github.com/lesomnus/cld/internal/daemon"
 	"github.com/lesomnus/cld/internal/tui"
 	"github.com/lesomnus/xli"
 	"github.com/lesomnus/xli/arg"
@@ -28,8 +29,28 @@ func NewCmdConfig() *xli.Command {
 		// command); `cld config edit` opens the file. The `edit` subcommand
 		// leaves the parent in Run|Pass mode, so the print handler stays quiet.
 		Commands: []*xli.Command{new_cmd_config_edit()},
+		Flags: flg.Flags{
+			&flg.Switch{Name: "daemon", Brief: "print the config the DAEMON loaded, and where from"},
+		},
 		Handler: xli.OnRun(func(ctx context.Context, cmd *xli.Command, next xli.Next) error {
 			c := use_config.Must(ctx)
+
+			// What this client reads and what the daemon reads are different
+			// files on different filesystems, and a setting that "did not
+			// apply" is always that gap. Ask the daemon itself rather than
+			// inferring it.
+			if v, _ := flg.Get[bool](cmd, "daemon"); v {
+				got, err := daemon.GetDaemonConfig(ctx, c.SocketPath())
+				if err != nil {
+					return err
+				}
+				where := got.Path
+				if where == "" {
+					where = "(no config file found; defaults only)"
+				}
+				fmt.Fprintf(cmd, "# daemon config: %s\n%s", where, got.YAML)
+				return nil
+			}
 			return yaml.NewEncoder(cmd).Encode(c)
 		}),
 	}
@@ -92,10 +113,8 @@ var dindConfigTemplate = []byte(
 
 // configVisibilityNote warns when the file about to be edited is not the one
 // the daemon reads, which is a quiet failure the user only discovers when a
-// setting never takes. There are two ways to land there and both are easy: the
-// daemon runs on the host, so nothing inside a devcontainer is its config; and
-// a cld.yaml in the working directory wins over the user's, so editing inside
-// any checkout that has one writes there.
+// setting never takes. The daemon runs on the host, so nothing inside a
+// devcontainer is its config; and a --config elsewhere is the client's alone.
 //
 // Returns "" when the target is the daemon's own config directory.
 func configVisibilityNote(path, daemon_dir string, in_devcontainer bool) string {
@@ -150,14 +169,8 @@ func editDindFile(ctx context.Context, cmd *xli.Command, path string) error {
 }
 
 // configEditPath decides which file `cld config edit` opens: the file the
-// running config was loaded from (which already reflects a --config path or a
-// discovered cld.yaml), or, when there is none yet, the one in the user's
-// config directory — created on save.
-//
-// A new file goes to the user config dir rather than the working directory
-// because that is the only place the containerized daemon can read it too; a
-// cwd cld.yaml would be edited happily and then never reach the daemon. It
-// never resolves to a phantom path a bare `cld config` would not use.
+// running config was loaded from (a --config path, or the user's own), or the
+// one in the user config directory when there is none yet — created on save.
 func configEditPath(c *config.Config) string {
 	if p := c.Path(); p != "" {
 		return p
@@ -165,7 +178,7 @@ func configEditPath(c *config.Config) string {
 	if dir := config.UserConfigDir(); dir != "" {
 		return filepath.Join(dir, "cld.yaml")
 	}
-	return config.DefaultConfigPaths()[0]
+	return "cld.yaml"
 }
 
 // cldConfigTemplate seeds a fresh cld.yaml. It is deliberately minimal — a

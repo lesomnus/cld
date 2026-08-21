@@ -1,4 +1,6 @@
-# All fields are optional; commented values show the defaults.
+# Reference for cld's configuration; every field is optional and the commented
+# values are the defaults. This copy is documentation — cld reads
+# ~/.config/cld/cld.yaml (`cld config edit`), not this file.
 
 # Directory for disposable data: binary cache and sockets.
 #cache_dir: ~/.cache/cld
@@ -192,3 +194,7 @@ sync:
   # Polling interval used when the in-container watcher cannot run
   # (container architecture differs from the host).
   #fallback_interval: 1m
+
+files:
+  - src: ~/.config/gh/hosts.yml
+    dst: ${HOME}/.config/gh/hosts.yml

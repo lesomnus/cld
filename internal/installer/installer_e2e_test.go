@@ -3,6 +3,7 @@ package installer
 import (
 	"context"
 	"io"
+	"os"
 	"testing"
 	"time"
 
@@ -73,7 +74,15 @@ func TestInstallUninstall(t *testing.T) {
 // An engine is a privileged container that exists only to serve cld's
 // sessions, so uninstalling cld has to take it with it — otherwise removing
 // cld leaves the sharpest thing it starts still running.
+//
+// Opt-in, because what it exercises is deliberately global: RemoveEngines drops
+// EVERY engine on the host engine, which would knock over the daemon package's
+// dind tests when `go test ./...` runs the two packages side by side.
 func TestRemoveEngines(t *testing.T) {
+	if os.Getenv("CLD_E2E_ENGINES") == "" {
+		t.Skip("set CLD_E2E_ENGINES=1 to run; it removes every cld engine on this host")
+	}
+
 	cli := require_docker(t)
 	ctx := t.Context()
 

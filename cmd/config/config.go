@@ -9,16 +9,19 @@ import (
 )
 
 // DefaultConfigPaths are the config files looked for, in order, when no
-// --config is given. The working directory comes first (handy while developing
-// against a checkout), then the user's own config directory — which is the one
-// that matters in practice, because it is the only place BOTH the host CLI and
-// the containerized daemon can see the same file.
+// --config is given: the user's config directory, and nothing else.
+//
+// The working directory is deliberately NOT searched. A cld.yaml sitting in
+// whatever checkout you happen to be in would be loaded by the client while the
+// daemon — which runs in a container and cannot see it — kept using its own, so
+// the two would disagree with no sign of it, and `cld config edit` would write
+// somewhere nothing reads. Point at such a file with --config when you mean to.
 func DefaultConfigPaths() []string {
-	paths := []string{"cld.yaml", "cld.yml"}
-	if dir := UserConfigDir(); dir != "" {
-		paths = append(paths, filepath.Join(dir, "cld.yaml"), filepath.Join(dir, "cld.yml"))
+	dir := UserConfigDir()
+	if dir == "" {
+		return nil
 	}
-	return paths
+	return []string{filepath.Join(dir, "cld.yaml"), filepath.Join(dir, "cld.yml")}
 }
 
 // UserConfigDirName is where a user's cld config lives under the home

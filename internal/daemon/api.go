@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goccy/go-yaml"
 	"github.com/lesomnus/cld/internal/broker"
 	"github.com/lesomnus/cld/internal/dockerx"
 )
@@ -55,6 +56,9 @@ func (d *Daemon) api() http.Handler {
 	mux.HandleFunc("POST /claude/update/all", d.handle_update_all)
 	mux.HandleFunc("GET /claude/config", d.handle_get_config)
 	mux.HandleFunc("GET /session/env", d.handle_get_env)
+	// Host-only: the config is global, so a container reading it would see
+	// every other project's settings — and its secrets.
+	mux.HandleFunc("GET /config", d.handle_get_config_file)
 	// Host-only: driving the engine means exec'ing into its container, which
 	// needs the host engine — something a container has no access to anyway.
 	mux.HandleFunc("GET /docker/engine", d.handle_get_engine)
@@ -716,6 +720,26 @@ func (d *Daemon) handle_get_env(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"vars": res.vars})
 }
 
+// DaemonConfig is the configuration the daemon is actually running with, and
+// the file it came from ("" when none was found). Backs `cld config --daemon`,
+// which exists because the alternative is guessing: the daemon reads its config
+// on the host, from a path a client may not share, so "the setting did not
+// apply" has no other answer.
+type DaemonConfig struct {
+	Path string `json:"path"`
+	YAML string `json:"yaml"`
+}
+
+func (d *Daemon) handle_get_config_file(w http.ResponseWriter, r *http.Request) {
+	b, err := yaml.Marshal(d.cfg)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(DaemonConfig{Path: d.cfg.Path(), YAML: string(b)})
+}
+
 // DockerEngine describes the Docker engine cld runs for a devcontainer.
 type DockerEngine struct {
 	// Container is the engine container's id, which is what a client execs
@@ -1186,6 +1210,37 @@ func GetSessionEnv(ctx context.Context, socket string, name string) ([]EnvVar, e
 		return nil, err
 	}
 	return out.Vars, nil
+}
+
+// GetDaemonConfig returns the configuration the daemon loaded, and from where.
+// Backs `cld config --daemon`.
+func GetDaemonConfig(ctx context.Context, socket string) (DaemonConfig, error) {
+	hc := NewSocketClient(socket)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://cld/config", nil)
+	if err != nil {
+		return DaemonConfig{}, err
+	}
+
+	res, err := hc.Do(req)
+	if err != nil {
+		return DaemonConfig{}, fmt.Errorf("is `cld serve` running? %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 512))
+		msg := strings.TrimSpace(string(body))
+		if res.StatusCode == http.StatusNotFound {
+			return DaemonConfig{}, fmt.Errorf(
+				"%s — the running daemon may predate `cld config --daemon`; re-run `cld install --recreate`", msg)
+		}
+		return DaemonConfig{}, fmt.Errorf("%s", msg)
+	}
+
+	var out DaemonConfig
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		return DaemonConfig{}, err
+	}
+	return out, nil
 }
 
 // GetDockerEngine returns the Docker engine cld runs for the named
