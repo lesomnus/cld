@@ -249,12 +249,13 @@ the layer that won. `--export` prints shell assignments instead, for `eval`.
 
 ## When changes take effect
 
-The environment is fixed when a session is created, so:
+The environment is fixed when a session is created, so **an existing session
+keeps its environment** — restart it with `cld it --new <name>`, or restart the
+container.
 
-- **an existing session keeps its environment** — restart it with
-  `cld it --new <name>`, or restart the container;
-- **the daemon reads `cld.yaml` at startup** — restart the daemon
-  (`docker restart cld`) after editing it.
+The daemon itself needs no restart: it re-reads `cld.yaml` when the file
+changes, so the next provisioning uses what you just wrote. (`cld config
+--daemon` prints what it has, and which file it came from.)
 
 ## Not supported
 

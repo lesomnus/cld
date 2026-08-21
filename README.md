@@ -420,8 +420,12 @@ takes.
 That path matters: the daemon runs in a container and reads your home through
 the read-only mount it already has, so `~/.config/cld/cld.yaml` is the one file
 both the host CLI and the daemon see. A config anywhere else reaches the client
-commands only. **Restart the daemon** (`docker restart cld`) after changing
-anything the daemon acts on.
+commands only.
+
+What a container is provisioned with — `env`, `files`, `scripts`, `projects`,
+`docker`, `ignore` — is re-read as the file changes, so an edit applies to the
+next provisioning. The rest (directories, `auth`, `telemetry`, `sync`) is bound
+when the daemon starts and needs `docker restart cld`.
 
 All settings are optional; see `cld.yaml` for the full list with defaults.
 

@@ -731,13 +731,18 @@ type DaemonConfig struct {
 }
 
 func (d *Daemon) handle_get_config_file(w http.ResponseWriter, r *http.Request) {
-	b, err := yaml.Marshal(d.cfg)
+	// Report what a provisioning right now would use, not what was loaded at
+	// startup: the point of the command is to answer "is my edit in effect?".
+	d.pol.refresh()
+	pol := d.policy()
+
+	b, err := yaml.Marshal(pol)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(DaemonConfig{Path: d.cfg.Path(), YAML: string(b)})
+	json.NewEncoder(w).Encode(DaemonConfig{Path: pol.Path(), YAML: string(b)})
 }
 
 // DockerEngine describes the Docker engine cld runs for a devcontainer.
@@ -779,7 +784,7 @@ func (d *Daemon) handle_get_engine(w http.ResponseWriter, r *http.Request) {
 	// is derived from worker-owned fields, so reading them here would race
 	// provisioning.
 	if !e.mbox.post(func() {
-		if !d.cfg.DockerFor(e.item.LocalFolder).Enabled() {
+		if !d.policy().DockerFor(e.item.LocalFolder).Enabled() {
 			done <- result{}
 			return
 		}

@@ -42,7 +42,7 @@ func (d *Daemon) install_files(ctx context.Context, e *entry, id string) {
 
 	made_marker_dir := false
 	for _, f := range specs {
-		src := d.cfg.HostPath(f.Src)
+		src := d.policy().HostPath(f.Src)
 		if src == "" {
 			d.log.Warn("files: unreadable source",
 				slog.String("name", e.item.Name), slog.String("src", f.Src))
@@ -112,8 +112,9 @@ func (d *Daemon) install_files(ctx context.Context, e *entry, id string) {
 // file_specs are the placements that apply to this container: the global ones
 // first, then those of every matching project block, in file order.
 func (d *Daemon) file_specs(e *entry) []config.FileSpec {
-	out := append([]config.FileSpec{}, d.cfg.Files...)
-	for _, p := range d.cfg.MatchProjects(e.item.LocalFolder) {
+	pol := d.policy()
+	out := append([]config.FileSpec{}, pol.Files...)
+	for _, p := range pol.MatchProjects(e.item.LocalFolder) {
 		out = append(out, p.Files...)
 	}
 	return out

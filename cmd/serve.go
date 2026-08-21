@@ -44,6 +44,11 @@ func NewCmdServe() *xli.Command {
 			if err != nil {
 				return err
 			}
+			// With no config file yet, watch where one would appear: creating it
+			// later should take effect like any other edit, not need a restart.
+			if c.Path() == "" {
+				d.WatchConfig(config.DefaultConfigPaths())
+			}
 
 			ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 			defer stop()

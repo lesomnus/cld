@@ -23,10 +23,11 @@ import (
 // container generation (gated on e.dotfiles) and every failure is logged, never
 // returned, so it cannot block provisioning.
 func (d *Daemon) install_dotfiles(ctx context.Context, e *entry, id string) {
-	if e.dotfiles || d.cfg.Dotfiles.Disabled || e.home == "" {
+	pol := d.policy()
+	if e.dotfiles || pol.Dotfiles.Disabled || e.home == "" {
 		return
 	}
-	src := d.cfg.DotfilesDir()
+	src := pol.DotfilesDir()
 	if src == "" {
 		return // the daemon has no host-home mount; nothing to read
 	}

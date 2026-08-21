@@ -105,8 +105,9 @@ func (d *Daemon) scripts_for(e *entry, ev scriptEvent) []script {
 		}
 	}
 
-	add(d.cfg.Scripts, "cld.yaml scripts")
-	for _, p := range d.cfg.MatchProjects(e.item.LocalFolder) {
+	pol := d.policy()
+	add(pol.Scripts, "cld.yaml scripts")
+	for _, p := range pol.MatchProjects(e.item.LocalFolder) {
 		add(p.Scripts, "cld.yaml projects["+strings.Join(p.Match, ",")+"]")
 	}
 	return out

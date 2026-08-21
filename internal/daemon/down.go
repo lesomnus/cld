@@ -184,7 +184,7 @@ func (d *Daemon) managed_devcontainer(ctx context.Context, id string) bool {
 		labels = insp.Container.Config.Labels
 	}
 	folder := labels[devc.LabelLocalFolder]
-	return folder != "" && !devc.Ignored(labels, folder, d.cfg.Ignore)
+	return folder != "" && !devc.Ignored(labels, folder, d.policy().Ignore)
 }
 
 // down_targets resolves what to remove for the devcontainer identified by id.
@@ -212,7 +212,7 @@ func (d *Daemon) down_targets(ctx context.Context, id string) (containers []stri
 	sel := client.Filters{"label": {composeProjectLabel + "=" + project: true}}
 	if res, err := d.cli.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: sel}); err == nil {
 		for _, c := range res.Items {
-			if c.ID != id && devc.Ignored(c.Labels, c.Labels[devc.LabelLocalFolder], d.cfg.Ignore) {
+			if c.ID != id && devc.Ignored(c.Labels, c.Labels[devc.LabelLocalFolder], d.policy().Ignore) {
 				continue
 			}
 			containers = append(containers, c.ID)

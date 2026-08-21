@@ -52,6 +52,10 @@ func (d *Daemon) ensure(ctx context.Context, e *entry) {
 }
 
 func (d *Daemon) ensure_(ctx context.Context, e *entry) error {
+	// One stat: pick up an edited cld.yaml before deciding anything about this
+	// container, so a setting applies without restarting the daemon.
+	d.pol.refresh()
+
 	id := e.id
 	insp, err := d.cli.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
 	if err != nil {
@@ -64,7 +68,7 @@ func (d *Daemon) ensure_(ctx context.Context, e *entry) error {
 		labels = c.Config.Labels
 	}
 	local_folder := labels[devc.LabelLocalFolder]
-	if local_folder == "" || devc.Ignored(labels, local_folder, d.cfg.Ignore) {
+	if local_folder == "" || devc.Ignored(labels, local_folder, d.policy().Ignore) {
 		d.remove(e)
 		return nil
 	}
@@ -525,7 +529,7 @@ func (d *Daemon) install_self(ctx context.Context, id string) error {
 // don't want it, skipped when there is no GitHub remote, and every failure is
 // logged, never returned, so it can't fail provisioning.
 func (d *Daemon) install_gh(ctx context.Context, e *entry, id string) {
-	if d.cfg.Gh.Disabled {
+	if d.policy().Gh.Disabled {
 		return
 	}
 	if !d.has_github_remote(ctx, e, id) {
@@ -956,10 +960,11 @@ func (d *Daemon) env_defaults() map[string]string {
 // match winning.
 func (d *Daemon) env_user_layers(e *entry) []envx.Layer {
 	out := []envx.Layer{}
-	if len(d.cfg.Env) > 0 {
-		out = append(out, envx.Layer{Origin: envOriginConfig, Vars: d.cfg.Env})
+	pol := d.policy()
+	if len(pol.Env) > 0 {
+		out = append(out, envx.Layer{Origin: envOriginConfig, Vars: pol.Env})
 	}
-	for _, p := range d.cfg.MatchProjects(e.item.LocalFolder) {
+	for _, p := range pol.MatchProjects(e.item.LocalFolder) {
 		if len(p.Env) == 0 {
 			continue
 		}

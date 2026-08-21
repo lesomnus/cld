@@ -300,6 +300,9 @@ type Daemon struct {
 	// by the host's engine, where the daemon's own view of paths means nothing.
 	// Empty when it cannot be determined.
 	host_home_path string
+	// pol re-reads the session policy from the config file as it changes;
+	// cfg keeps the startup values for everything else. See policy.go.
+	pol      *policy_store
 	sessions *sessionStore
 	proxy    *proxyStore    // per-project opt-in to broker-proxy auth (see proxyStore)
 	broker   *broker.Broker // central subscription-auth broker (see internal/broker)
@@ -328,7 +331,7 @@ func New(cfg *config.Config, cli *client.Client, log *slog.Logger) (*Daemon, err
 	}
 
 	rc := release.NewClient(cfg.Release.BaseURL)
-	return &Daemon{
+	d := &Daemon{
 		cfg:  cfg,
 		cli:  cli,
 		tmux: &tmuxx.Server{Socket: cfg.TmuxSocketPath()},
@@ -352,8 +355,20 @@ func New(cfg *config.Config, cli *client.Client, log *slog.Logger) (*Daemon, err
 		// Run replaces this with its own cancellable context; a usable default
 		// means a daemon can answer a query before Run is called, as tests do.
 		base_ctx: context.Background(),
-	}, nil
+	}
+	d.pol = new_policy_store(cfg, log)
+	return d, nil
 }
+
+// policy is the config as it stands now — re-read when the file changes, so an
+// edit applies without restarting the daemon. Use it for what a container is
+// provisioned with; d.cfg keeps the startup values for everything else.
+func (d *Daemon) policy() *config.Config { return d.pol.get() }
+
+// WatchConfig names the files to reload the policy from, for a daemon whose
+// config did not exist at startup — creating it later then takes effect like
+// any other edit. Only the caller knows which paths were searched.
+func (d *Daemon) WatchConfig(paths []string) { d.pol.watch(paths) }
 
 func (d *Daemon) Run(ctx context.Context) error {
 	d.base_ctx = ctx

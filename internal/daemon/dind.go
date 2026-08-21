@@ -85,7 +85,7 @@ func dind_endpoint(key string) string {
 // comes up without DOCKER_HOST instead of pointing claude at an engine that is
 // not there — a state `cld setting env` shows plainly.
 func (d *Daemon) ensure_dind(ctx context.Context, e *entry, id string) {
-	cfg := d.cfg.DockerFor(e.item.LocalFolder)
+	cfg := d.policy().DockerFor(e.item.LocalFolder)
 	e.docker_host = ""
 	if !cfg.Enabled() {
 		return
@@ -99,7 +99,7 @@ func (d *Daemon) ensure_dind(ctx context.Context, e *entry, id string) {
 		log.Warn("dind: network failed", slog.String("error", err.Error()))
 		return
 	}
-	over, err := d.cfg.LoadDindOverride(e.item.LocalFolder)
+	over, err := d.policy().LoadDindOverride(e.item.LocalFolder)
 	if err == nil {
 		over, err = expand_dind_volumes(over, d.host_home_path)
 	}
@@ -608,7 +608,7 @@ func (d *Daemon) project_dind_key(e *entry) string {
 	if e.item.LocalFolder == "" {
 		return "" // never resolved far enough to have an engine
 	}
-	cfg := d.cfg.DockerFor(e.item.LocalFolder)
+	cfg := d.policy().DockerFor(e.item.LocalFolder)
 	if !cfg.Enabled() || cfg.Shared() {
 		return ""
 	}
